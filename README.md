@@ -19,7 +19,7 @@ See [SPEC.md](SPEC.md) for the full design.
 Requires pi ≥ 1.0.
 
 ```bash
-pi install git:github.com/sergiosegrera/o6y@v0.2.0   # pinned to a release
+pi install git:github.com/sergiosegrera/o6y@v0.3.0   # pinned to a release
 pi install git:github.com/sergiosegrera/o6y          # follows the default branch
 pi install git:github.com/sergiosegrera/o6y -l       # this project only (.pi/settings.json)
 pi -e git:github.com/sergiosegrera/o6y               # try it for one run, without installing
@@ -36,13 +36,13 @@ Updates replace only o6y's code and skill. Your memory lives in the stores and i
 | Global store | `~/.agents/o6y` | `O6Y_HOME` or `--o6y-global <path>` |
 | Project store | `<cwd>/.agents/o6y` | `O6Y_PROJECT` or `--o6y-project <path>` |
 
-Starter schemas are seeded into an empty global store. They are light and development-focused, and meant to be reshaped:
-- `person`, with optional reviewer notes
-- `team`
-- `system`
-- `practice`
-- `decision`
-- `gotcha`
+Four minimal starter types are seeded into an empty global store:
+- `person`: people, with optional review notes
+- `preference`: how the user or team wants things done
+- `note`: any other durable knowledge, tagged
+- `decision`: choices that shouldn't be relitigated
+
+The agent adds a type when a kind of note keeps recurring.
 
 To have something load in every session, set `pinned: true` on its object. The total size of pinned objects is capped by `pinnedBudget` in the root schema (`~/.agents/o6y/.schema.md`). The root schema's body is loaded every session too, as store-wide guidance.
 

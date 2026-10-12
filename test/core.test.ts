@@ -304,7 +304,7 @@ describe("fs ops", () => {
     expect(readFileSync(join(p, "log.md"), "utf8")).toContain("- 2026-01-02T03:04:05Z create org/x (write)");
     const fresh = join(tmp, "fresh");
     const written = bootstrap(fresh);
-    expect(written.length).toBe(7);
+    expect(written.length).toBe(5);
     expect(bootstrap(fresh)).toEqual([]);
     expect(Store.load(makeLayers(fresh)).errors()).toEqual([]);
   });

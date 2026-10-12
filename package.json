@@ -1,6 +1,6 @@
 {
   "name": "o6y",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Typed, validated, interlinked markdown memory (ontology wiki) for the pi coding agent",
   "type": "module",
   "license": "MIT",
@@ -36,7 +36,8 @@
   },
   "scripts": {
     "test": "bun test",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "eval": "bun evals/run.ts"
   },
   "dependencies": {
     "yaml": "^2.9.1"

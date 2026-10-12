@@ -143,13 +143,13 @@ Of the object budget, 30% goes to the most recently changed objects, so new know
 - `/o6y-lint` and the `o6y_lint` tool report invalid objects, warnings, wanted pages, orphans and undeclared fields.
 - The `o6y_query` tool filters objects by type, field values, links and text.
 - `/o6y` shows store status and refreshes the prompt section.
-- Starter schemas are seeded into an empty global store. They are deliberately light and development-focused, aimed at where a team's tribal knowledge lives, and the agent is expected to reshape them:
-  - `person` (role; optional `## Review notes`, i.e. a reviewer persona)
-  - `team`
-  - `system` (repos, services, libraries, infra)
-  - `practice` (conventions, processes)
-  - `decision`
-  - `gotcha`
+- Four minimal starter types are seeded into an empty global store:
+  - `person` (role, team; optional `## Review notes`)
+  - `preference` (scope)
+  - `note` (tags, related)
+  - `decision` (date, status)
+
+  When a kind of note keeps recurring, the agent gives it its own type.
 
 ## Implementation
 

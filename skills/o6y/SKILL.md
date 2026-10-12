@@ -125,6 +125,8 @@ Warnings never block a write. They are appended to the tool result, so resolve t
 
 ## Recipes
 
+**Write to a type.** Read its `<type>/.schema.md` first (fields, guidance, `index:`). Keep summaries well under the cap: a rejected write costs a retry.
+
 **Add a type.** Write `<type>/.schema.md` with a `description`, then write its objects.
 
 **Add an optional field.** Edit the schema. Existing objects stay valid.

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0
+
+- Tighter starter types: `person`, `preference` (how the user or team wants things done), `note` (tagged catch-all) and `decision`. These replace person/team/system/practice/decision/gotcha. Existing stores are not changed.
+- The agent is told to read a type's schema before its first write to that type in a session.
+- An eval set (`evals/`, `bun run eval`): 12 behavioural cases that drive real pi sessions against fixture stores, scored deterministically, with baseline comparison.
+
 ## 0.2.0
 
 - Pinned objects: `pinned: true` loads an object's full content into every session. All pinned objects share a `pinnedBudget` (default 2500 characters), and writes that would exceed it are rejected.

@@ -146,60 +146,49 @@ export const STARTER_SCHEMAS: Record<string, string> = {
 o6yFormat: ${FORMAT_VERSION}
 summaryMaxLength: 80
 promptBudget: 8000
+pinnedBudget: 2500
 ---
-Engineering memory: the tribal knowledge a new teammate would need: who does what, how the
-systems fit together, how things are done here and why. Keep objects factual, concise and linked.
-These starter types are a suggestion; reshape them to fit how this team actually works.
+Memory of the user and their work: the people, preferences, decisions and tribal knowledge a
+teammate would need. Keep objects factual, concise and linked. The starter types are deliberately
+minimal; when a kind of note keeps recurring (systems, gotchas, runbooks…), give it its own type.
 `,
   [`person/${SCHEMA_FILE}`]: `---
-description: Someone the user works with (teammate, reviewer, stakeholder)
+description: Someone the user works with or mentions (teammate, reviewer, stakeholder)
 fields:
   role: string
-  team: { type: link, to: team }
+  team: string
 index: [role]
 ---
-Who they are and what they own or know best. If they review code, a \`## Review notes\` section
-(what they look for, recurring feedback, what gets their approval) lets you pre-empt their review.
+Who they are, what they own or know best, and how to work with them. If they review code, a
+\`## Review notes\` section (what they look for, recurring feedback) lets you pre-empt their review.
 `,
-  [`team/${SCHEMA_FILE}`]: `---
-description: A group that owns systems or responsibilities
+  [`preference/${SCHEMA_FILE}`]: `---
+description: How the user or team wants things done (style, tools, workflow, communication)
 fields:
-  owns: { type: link, to: system, many: true }
+  scope: { type: string, description: "who it applies to: user, team, or a project/repo name" }
+index: [scope]
 ---
-What the team is responsible for and how to reach or work with it.
+Write the preference as an instruction you can follow, plus the reason if known. One preference
+per object; when it changes, update the object instead of adding a contradicting one.
 `,
-  [`system/${SCHEMA_FILE}`]: `---
-description: A codebase, service, library, app or piece of infrastructure
+  [`note/${SCHEMA_FILE}`]: `---
+description: Any other durable knowledge — how a system works, a convention, a gotcha, a fact
 fields:
-  repo: string
-  owner: { type: link, to: [team, person] }
-index: [owner]
+  tags: list
+  related: { type: link, many: true }
+index: [tags]
 ---
-What it does and where it lives; how to run, test and ship it; what it depends on (link other
-systems). Leave detail that is obvious from the code out.
-`,
-  [`practice/${SCHEMA_FILE}`]: `---
-description: How something is done here — a convention, process or workflow
-fields:
-  applies_to: { type: link, to: system, many: true }
----
-The rule or the steps, why it exists, and known exceptions. Link who to ask.
+One topic per note, with a specific summary. Tag it (e.g. system, practice, gotcha) so related
+notes are easy to find, and link what it is about.
 `,
   [`decision/${SCHEMA_FILE}`]: `---
 description: A choice that was made and should not be silently relitigated
 fields:
   date: date
+  status: string
 index: [date]
 ---
-Context, what was decided, and the consequences. Link what it affects; if it replaces an
-earlier decision, link that one.
-`,
-  [`gotcha/${SCHEMA_FILE}`]: `---
-description: A non-obvious pitfall, footgun, flaky behaviour or workaround
-fields:
-  applies_to: { type: link, to: system, many: true }
----
-Symptom, cause, and the fix or workaround.
+Context, what was decided, and the consequences. If it replaces an earlier decision, link that one.
 `,
 };
 
