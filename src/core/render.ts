@@ -8,8 +8,9 @@ import { formatIssues, INDEX_FILE, type ObjectEntry, SCHEMA_FILE, type Store, ty
 const ROOT_INDEX_PER_TYPE = 50;
 /** Share of the prompt's object budget reserved for the most recently changed objects. */
 const RECENT_SHARE = 0.3;
-/** Share of the prompt's object budget that names-only entries may take, so full lines always get room. */
-const NAMES_SHARE = 0.5;
+/** Shares of the object budget that `alwaysList` types and neighbors of directory matches may take. */
+const ALWAYS_SHARE = 0.35;
+const NEIGHBOR_SHARE = 0.4;
 
 /** Shortens paths under the home directory to `~/…`; long absolute paths invite typos. */
 export function displayPath(path: string, home = homedir()): string {
@@ -40,6 +41,12 @@ function objectLine(store: Store, obj: ObjectEntry): string {
   if (store.layers.length > 1 && obj.layer.name === "project") values.push("project");
   const meta = values.length ? ` (${values.join(" · ")})` : "";
   return `- [[${obj.id}]]${meta} — ${obj.summary || "(no summary)"}`;
+}
+
+/** `- [[id]] — summary`: prompt lines leave index fields to index.md. */
+function promptLine(store: Store, obj: ObjectEntry): string {
+  const project = store.layers.length > 1 && obj.layer.name === "project" ? " (project)" : "";
+  return `- [[${obj.id}]]${project} — ${obj.summary || "(no summary)"}`;
 }
 
 function inbound(store: Store, obj: ObjectEntry): number {
@@ -170,9 +177,12 @@ export function bulkChanged(objects: ObjectEntry[]): Set<string> {
   return bulk;
 }
 
+const PATH_TOKEN = /(?:^|[\s(,;])((?:~\/|\/)[^\s,;()]+)/g;
+
+/** Absolute or `~/` paths in a field value, including paths inside prose ("~/x (primary) + ~/y"). */
 function pathValues(value: unknown, out: string[] = []): string[] {
   if (typeof value === "string") {
-    if (value.startsWith("/") || value.startsWith("~/")) out.push(value);
+    for (const m of value.matchAll(PATH_TOKEN)) out.push(m[1]!);
   } else if (Array.isArray(value)) {
     for (const v of value) pathValues(v, out);
   }
@@ -182,7 +192,8 @@ function pathValues(value: unknown, out: string[] = []): string[] {
 /**
  * Objects relevant to where the agent is working: an object with a path field containing one of
  * `workPaths` (e.g. `location: ~/Projects/north` for cwd ~/Projects/north/api), or whose slug is
- * the directory's name, plus every object linked to or from those.
+ * the directory's name (`direct`), plus the objects that link to those (`linked`). Outgoing links
+ * are left out: a hub like system/north links to half the store.
  */
 export function relevantObjects(store: Store, workPaths: string[], home = homedir()): { direct: Set<string>; linked: Set<string> } {
   const direct = new Set<string>();
@@ -202,11 +213,7 @@ export function relevantObjects(store: Store, workPaths: string[], home = homedi
     }
   }
   const linked = new Set<string>();
-  for (const id of direct) {
-    const obj = store.objects.get(id)!;
-    for (const t of [...obj.fieldLinks, ...obj.bodyLinks].map((l) => l.target)) if (store.objects.has(t)) linked.add(t);
-    for (const s of store.backlinks.get(id) ?? []) linked.add(s);
-  }
+  for (const id of direct) for (const s of store.backlinks.get(id) ?? []) linked.add(s);
   for (const id of direct) linked.delete(id);
   return { direct, linked };
 }
@@ -229,7 +236,11 @@ export interface PromptStats {
   guidance: number;
   pinned: number;
   catalog: number;
+  /** Characters of full lines (against `budget`) and of slug lists (against `namesBudget`). */
+  lines: number;
+  names: number;
   budget: number;
+  namesBudget: number;
   objects: number;
   /** Objects shown with a full line, by slug only, or not at all. */
   full: number;
@@ -261,14 +272,20 @@ export function buildPromptSection(store: Store, options: PromptOptions = {}): {
   const headLength = head.join("\n").length;
 
   const types = sortedTypes(store);
-  const headers = new Map(types.map((t) => [t.name, typeHeader(store, t, "##")]));
+  // Fields only matter when writing, and the agent reads the schema first; index.md has them.
+  const headers = new Map(
+    types.map((t) => [
+      t.name,
+      [`## ${t.name} (${store.objectsOfType(t.name).length})${store.layers.length > 1 ? ` [${t.layer.name}]` : ""} — ${t.schema.description}`],
+    ]),
+  );
   const NAMES_PREFIX = "also: ";
   const all = [...store.objects.values()];
-  const lineOf = new Map(all.map((o) => [o.id, objectLine(store, o)]));
+  const lineOf = new Map(all.map((o) => [o.id, promptLine(store, o)]));
   const nameOf = (o: ObjectEntry) => (store.layers.length > 1 && o.layer.name === "project" ? `${o.slug} [project]` : o.slug);
   const lineCost = (o: ObjectEntry) => lineOf.get(o.id)!.length + 1;
   const nameCost = (o: ObjectEntry) => nameOf(o).length + 2;
-  const fixed = [...headers.values()].reduce((n, h) => n + h.join("\n").length + 2 + NAMES_PREFIX.length + 60, 0) + 300;
+  const fixed = [...headers.values()].reduce((n, h) => n + h.join("\n").length + 2, 0) + 300;
   const budget = Math.max(0, store.settings.promptBudget - fixed);
 
   // Priority order for full lines.
@@ -279,44 +296,40 @@ export function buildPromptSection(store: Store, options: PromptOptions = {}): {
     .filter((o) => !bulk.has(o.id))
     .sort((a, b) => b.mtimeMs - a.mtimeMs || a.id.localeCompare(b.id));
   const groups: { objects: ObjectEntry[]; limit: number }[] = [
-    { objects: ranked.filter((o) => store.types.get(o.type)?.schema.alwaysList), limit: budget },
     { objects: ranked.filter((o) => direct.has(o.id)), limit: budget },
-    { objects: ranked.filter((o) => linked.has(o.id)), limit: budget },
+    { objects: ranked.filter((o) => store.types.get(o.type)?.schema.alwaysList), limit: budget * ALWAYS_SHARE },
+    { objects: ranked.filter((o) => linked.has(o.id)), limit: budget * NEIGHBOR_SHARE },
     { objects: recent, limit: budget * RECENT_SHARE },
     { objects: ranked, limit: budget },
   ];
 
-  // Full lines first, in priority order, while leaving room to name the rest (up to NAMES_SHARE
-  // of the budget); then names for the rest in the same order, in whatever budget remains.
+  // Full lines fill promptBudget in priority order. Every other object is then listed by slug,
+  // outside that budget (names have their own, larger namesBudget), in the same order.
   const full = new Set<string>();
-  let fullCost = 0;
-  let restNames = all.reduce((n, o) => n + nameCost(o), 0);
+  let used = 0;
   const order: ObjectEntry[] = [];
   const ordered = new Set<string>();
   for (const group of groups) {
     let spent = 0;
     for (const obj of group.objects) {
-      if (full.has(obj.id)) continue;
       if (!ordered.has(obj.id)) {
         ordered.add(obj.id);
         order.push(obj);
       }
-      if (obj.pinned) continue; // already in full above; listed by name only
+      if (full.has(obj.id) || obj.pinned) continue; // pinned objects are already in full above
       const cost = lineCost(obj);
-      const names = restNames - nameCost(obj);
-      if (fullCost + cost + Math.min(names, budget * NAMES_SHARE) > budget || spent + cost > group.limit) continue;
+      if (used + cost > budget || spent + cost > group.limit) continue;
       full.add(obj.id);
-      fullCost += cost;
-      restNames = names;
+      used += cost;
       spent += cost;
     }
   }
   const named = new Set<string>();
-  let used = fullCost;
+  let namesUsed = 0;
   for (const obj of order) {
-    if (full.has(obj.id) || used + nameCost(obj) > budget) continue;
+    if (full.has(obj.id) || namesUsed + nameCost(obj) > store.settings.namesBudget) continue;
     named.add(obj.id);
-    used += nameCost(obj);
+    namesUsed += nameCost(obj);
   }
 
   const body: string[] = [];
@@ -332,8 +345,8 @@ export function buildPromptSection(store: Store, options: PromptOptions = {}): {
     if (hidden > 0) body.push(`… ${hidden} more: read ${displayPath(join(type.layer.root, type.name, INDEX_FILE))}`);
   }
   const reasons = [
-    types.some((t) => t.schema.alwaysList) && "always-listed types",
     direct.size && "relevant to this directory",
+    types.some((t) => t.schema.alwaysList) && "always-listed types",
     "recently changed",
     "most linked",
   ].filter(Boolean);
@@ -349,7 +362,10 @@ export function buildPromptSection(store: Store, options: PromptOptions = {}): {
       guidance: pinnedStart - guidanceStart,
       pinned: headLength - pinnedStart,
       catalog: catalog.length,
+      lines: used,
+      names: namesUsed,
       budget: store.settings.promptBudget,
+      namesBudget: store.settings.namesBudget,
       objects: store.objects.size,
       full: full.size,
       named: named.size,

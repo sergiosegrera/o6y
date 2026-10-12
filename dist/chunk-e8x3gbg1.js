@@ -84,7 +84,8 @@ var FIELD_TYPES = ["string", "number", "boolean", "date", "enum", "list", "link"
 var DEFAULT_SETTINGS = {
   summaryMaxLength: 80,
   promptBudget: 8000,
-  pinnedBudget: 2500
+  pinnedBudget: 2500,
+  namesBudget: 1e4
 };
 var RESERVED_FIELDS = ["summary", "pinned"];
 function parseRootSchema(text) {
@@ -753,7 +754,8 @@ import { homedir } from "node:os";
 import { basename as basename2, join as join2 } from "node:path";
 var ROOT_INDEX_PER_TYPE = 50;
 var RECENT_SHARE = 0.3;
-var NAMES_SHARE = 0.5;
+var ALWAYS_SHARE = 0.35;
+var NEIGHBOR_SHARE = 0.4;
 function displayPath(path, home = homedir()) {
   return path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
 }
@@ -783,6 +785,10 @@ function objectLine(store, obj) {
     values.push("project");
   const meta = values.length ? ` (${values.join(" · ")})` : "";
   return `- [[${obj.id}]]${meta} — ${obj.summary || "(no summary)"}`;
+}
+function promptLine(store, obj) {
+  const project = store.layers.length > 1 && obj.layer.name === "project" ? " (project)" : "";
+  return `- [[${obj.id}]]${project} — ${obj.summary || "(no summary)"}`;
 }
 function inbound(store, obj) {
   return store.backlinks.get(obj.id)?.size ?? 0;
@@ -900,10 +906,11 @@ function bulkChanged(objects) {
   }
   return bulk;
 }
+var PATH_TOKEN = /(?:^|[\s(,;])((?:~\/|\/)[^\s,;()]+)/g;
 function pathValues(value, out = []) {
   if (typeof value === "string") {
-    if (value.startsWith("/") || value.startsWith("~/"))
-      out.push(value);
+    for (const m of value.matchAll(PATH_TOKEN))
+      out.push(m[1]);
   } else if (Array.isArray(value)) {
     for (const v of value)
       pathValues(v, out);
@@ -929,14 +936,9 @@ function relevantObjects(store, workPaths, home = homedir()) {
     }
   }
   const linked = new Set;
-  for (const id of direct) {
-    const obj = store.objects.get(id);
-    for (const t of [...obj.fieldLinks, ...obj.bodyLinks].map((l) => l.target))
-      if (store.objects.has(t))
-        linked.add(t);
+  for (const id of direct)
     for (const s of store.backlinks.get(id) ?? [])
       linked.add(s);
-  }
   for (const id of direct)
     linked.delete(id);
   return { direct, linked };
@@ -962,60 +964,58 @@ function buildPromptSection(store, options = {}) {
   const headLength = head.join(`
 `).length;
   const types = sortedTypes(store);
-  const headers = new Map(types.map((t) => [t.name, typeHeader(store, t, "##")]));
+  const headers = new Map(types.map((t) => [
+    t.name,
+    [`## ${t.name} (${store.objectsOfType(t.name).length})${store.layers.length > 1 ? ` [${t.layer.name}]` : ""} — ${t.schema.description}`]
+  ]));
   const NAMES_PREFIX = "also: ";
   const all = [...store.objects.values()];
-  const lineOf = new Map(all.map((o) => [o.id, objectLine(store, o)]));
+  const lineOf = new Map(all.map((o) => [o.id, promptLine(store, o)]));
   const nameOf = (o) => store.layers.length > 1 && o.layer.name === "project" ? `${o.slug} [project]` : o.slug;
   const lineCost = (o) => lineOf.get(o.id).length + 1;
   const nameCost = (o) => nameOf(o).length + 2;
   const fixed = [...headers.values()].reduce((n, h) => n + h.join(`
-`).length + 2 + NAMES_PREFIX.length + 60, 0) + 300;
+`).length + 2, 0) + 300;
   const budget = Math.max(0, store.settings.promptBudget - fixed);
   const ranked = rankedObjects(store);
   const { direct, linked } = relevantObjects(store, options.workPaths ?? []);
   const bulk = bulkChanged(all);
   const recent = all.filter((o) => !bulk.has(o.id)).sort((a, b) => b.mtimeMs - a.mtimeMs || a.id.localeCompare(b.id));
   const groups = [
-    { objects: ranked.filter((o) => store.types.get(o.type)?.schema.alwaysList), limit: budget },
     { objects: ranked.filter((o) => direct.has(o.id)), limit: budget },
-    { objects: ranked.filter((o) => linked.has(o.id)), limit: budget },
+    { objects: ranked.filter((o) => store.types.get(o.type)?.schema.alwaysList), limit: budget * ALWAYS_SHARE },
+    { objects: ranked.filter((o) => linked.has(o.id)), limit: budget * NEIGHBOR_SHARE },
     { objects: recent, limit: budget * RECENT_SHARE },
     { objects: ranked, limit: budget }
   ];
   const full = new Set;
-  let fullCost = 0;
-  let restNames = all.reduce((n, o) => n + nameCost(o), 0);
+  let used = 0;
   const order = [];
   const ordered = new Set;
   for (const group of groups) {
     let spent = 0;
     for (const obj of group.objects) {
-      if (full.has(obj.id))
-        continue;
       if (!ordered.has(obj.id)) {
         ordered.add(obj.id);
         order.push(obj);
       }
-      if (obj.pinned)
+      if (full.has(obj.id) || obj.pinned)
         continue;
       const cost = lineCost(obj);
-      const names = restNames - nameCost(obj);
-      if (fullCost + cost + Math.min(names, budget * NAMES_SHARE) > budget || spent + cost > group.limit)
+      if (used + cost > budget || spent + cost > group.limit)
         continue;
       full.add(obj.id);
-      fullCost += cost;
-      restNames = names;
+      used += cost;
       spent += cost;
     }
   }
   const named = new Set;
-  let used = fullCost;
+  let namesUsed = 0;
   for (const obj of order) {
-    if (full.has(obj.id) || used + nameCost(obj) > budget)
+    if (full.has(obj.id) || namesUsed + nameCost(obj) > store.settings.namesBudget)
       continue;
     named.add(obj.id);
-    used += nameCost(obj);
+    namesUsed += nameCost(obj);
   }
   const body = [];
   for (const type of types) {
@@ -1030,8 +1030,8 @@ function buildPromptSection(store, options = {}) {
       body.push(`… ${hidden} more: read ${displayPath(join2(type.layer.root, type.name, INDEX_FILE))}`);
   }
   const reasons = [
-    types.some((t) => t.schema.alwaysList) && "always-listed types",
     direct.size && "relevant to this directory",
+    types.some((t) => t.schema.alwaysList) && "always-listed types",
     "recently changed",
     "most linked"
   ].filter(Boolean);
@@ -1049,7 +1049,10 @@ ${catalog}`,
       guidance: pinnedStart - guidanceStart,
       pinned: headLength - pinnedStart,
       catalog: catalog.length,
+      lines: used,
+      names: namesUsed,
       budget: store.settings.promptBudget,
+      namesBudget: store.settings.namesBudget,
       objects: store.objects.size,
       full: full.size,
       named: named.size,
@@ -1059,4 +1062,134 @@ ${catalog}`,
   };
 }
 
-export { __require, parseId, normalizeLinkValue, SCHEMA_FILE, LOG_FILE, canonicalPath, makeLayers, findLayer, classifyPath, Store, pinnedCost, blockingIssues, changeWarnings, formatIssues, lint, query, neighbors, displayPath, renderRootIndex, renderTypeIndex, renderObjectFooter, buildPromptSection };
+// src/core/fsops.ts
+import { appendFileSync, existsSync as existsSync2, mkdirSync, readdirSync as readdirSync2, readFileSync as readFileSync2, rmdirSync, rmSync, statSync as statSync2, writeFileSync } from "node:fs";
+import { dirname as dirname2, join as join3, relative as relative2 } from "node:path";
+
+// src/core/format.ts
+import { parseDocument } from "yaml";
+var FORMAT_VERSION = 1;
+
+// src/core/fsops.ts
+function describe(layers, path) {
+  const info = classifyPath(layers, path);
+  if (!info)
+    return path;
+  switch (info.kind) {
+    case "object":
+      return info.id;
+    case "type-schema":
+      return `schema ${info.type}`;
+    case "root-schema":
+      return "root schema";
+    default:
+      return relative2(info.layer.root, path);
+  }
+}
+function appendLog(layers, entries, via, now = new Date) {
+  const stamp = now.toISOString().replace(/\.\d{3}Z$/, "Z");
+  const byLayer = new Map;
+  for (const { action, path } of entries) {
+    const info = classifyPath(layers, path);
+    if (!info || info.kind === "log")
+      continue;
+    if (!byLayer.has(info.layer))
+      byLayer.set(info.layer, []);
+    byLayer.get(info.layer).push(`- ${stamp} ${action} ${describe(layers, path)} (${via})`);
+  }
+  for (const [layer, lines] of byLayer) {
+    const logPath = join3(layer.root, LOG_FILE);
+    mkdirSync(layer.root, { recursive: true });
+    if (!existsSync2(logPath))
+      writeFileSync(logPath, `# o6y log
+
+Append-only; written by o6y.
+
+`);
+    appendFileSync(logPath, lines.join(`
+`) + `
+`);
+  }
+}
+var STARTER_SCHEMAS = {
+  [SCHEMA_FILE]: `---
+o6yFormat: ${FORMAT_VERSION}
+summaryMaxLength: 80
+promptBudget: 8000
+namesBudget: 10000
+pinnedBudget: 2500
+---
+Memory of the user and their work: the people, preferences, decisions and tribal knowledge a
+teammate would need. Keep objects factual, concise and linked. The starter types are deliberately
+minimal; when a kind of note keeps recurring (systems, gotchas, runbooks…), give it its own type.
+`,
+  [`person/${SCHEMA_FILE}`]: `---
+description: Someone the user works with or mentions (teammate, reviewer, stakeholder)
+fields:
+  role: string
+  team: string
+index: [role]
+---
+Who they are, what they own or know best, and how to work with them. If they review code, a
+\`## Review notes\` section (what they look for, recurring feedback) lets you pre-empt their review.
+`,
+  [`preference/${SCHEMA_FILE}`]: `---
+description: How the user or team wants things done (style, tools, workflow, communication)
+fields:
+  scope: { type: string, description: "who it applies to: user, team, or a project/repo name" }
+index: [scope]
+alwaysList: true
+---
+Write the preference as an instruction you can follow, plus the reason if known. One preference
+per object; when it changes, update the object instead of adding a contradicting one.
+`,
+  [`note/${SCHEMA_FILE}`]: `---
+description: Any other durable knowledge — how a system works, a convention, a gotcha, a fact
+fields:
+  tags: list
+  related: { type: link, many: true }
+index: [tags]
+---
+One topic per note, with a specific summary. Tag it (e.g. system, practice, gotcha) so related
+notes are easy to find, and link what it is about.
+`,
+  [`decision/${SCHEMA_FILE}`]: `---
+description: A choice that was made and should not be silently relitigated
+fields:
+  date: date
+  status: string
+index: [date]
+---
+Context, what was decided, and the consequences. If it replaces an earlier decision, link that one.
+`
+};
+function storeSignature(layers) {
+  const walk2 = (dir, depth) => {
+    if (depth > 2)
+      return "";
+    let out = "";
+    let entries;
+    try {
+      entries = readdirSync2(dir, { withFileTypes: true });
+    } catch {
+      return "";
+    }
+    for (const e of entries) {
+      const full = join3(dir, e.name);
+      if (e.isDirectory())
+        out += `${full}/
+${walk2(full, depth + 1)}`;
+      else {
+        try {
+          const st = statSync2(full);
+          out += `${full}:${st.size}:${st.mtimeMs}
+`;
+        } catch {}
+      }
+    }
+    return out;
+  };
+  return layers.map((l) => walk2(l.root, 0)).join("\x00");
+}
+
+export { __require, parseId, normalizeLinkValue, LOG_FILE, canonicalPath, makeLayers, findLayer, classifyPath, Store, pinnedCost, blockingIssues, changeWarnings, formatIssues, appendLog, storeSignature, lint, query, neighbors, displayPath, renderRootIndex, renderTypeIndex, renderObjectFooter, buildPromptSection };

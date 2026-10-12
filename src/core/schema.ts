@@ -32,12 +32,15 @@ export interface RootSettings {
   promptBudget: number;
   /** Max characters of pinned objects (summary + body), injected in full every session. */
   pinnedBudget: number;
+  /** Max characters of the slug lists naming objects without a full line (separate from promptBudget). */
+  namesBudget: number;
 }
 
 export const DEFAULT_SETTINGS: RootSettings = {
   summaryMaxLength: 80,
   promptBudget: 8000,
   pinnedBudget: 2500,
+  namesBudget: 10000,
 };
 
 export const RESERVED_FIELDS = ["summary", "pinned"];

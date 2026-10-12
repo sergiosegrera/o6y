@@ -8,6 +8,7 @@ import {
   bootstrap,
   changesToLog,
   describe,
+  storeSignature,
   diffSnapshot,
   hasChanges,
   restoreSnapshot,
@@ -98,6 +99,8 @@ export default function o6y(pi: ExtensionAPI) {
 
   let layers: Layer[] = [];
   let promptSection = "";
+  /** Store fingerprint when promptSection was computed; the section is rebuilt when it changes. */
+  let promptSignature = "";
   let workDirs: string[] = [];
   const pending = new Map<string, Pending>();
 
@@ -118,6 +121,7 @@ export default function o6y(pi: ExtensionAPI) {
   const load = () => Store.load(layers);
 
   function refreshPrompt(): Store {
+    promptSignature = storeSignature(layers);
     const store = load();
     promptSection = renderPromptSection(store, { workPaths: workDirs });
     return store;
@@ -315,10 +319,10 @@ export default function o6y(pi: ExtensionAPI) {
   });
 
   pi.on("before_agent_start", async (event, ctx) => {
-    if (!layers.length) {
-      configure(ctx.cwd);
-      refreshPrompt();
-    }
+    if (!layers.length) configure(ctx.cwd);
+    // Rebuild when memory changed since the last prompt (written this session, or edited outside
+    // pi). Pi appends section changes as a transcript delta, so the cached prefix stays valid.
+    if (!promptSection || storeSignature(layers) !== promptSignature) refreshPrompt();
     event.systemPromptOptions.sections.o6y = promptSection;
   });
 

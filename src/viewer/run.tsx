@@ -20,7 +20,8 @@ export async function runViewer(layers: Layer[], initial: ViewerState): Promise<
           state = s;
         }}
       />,
-      { alternateScreen: true, exitOnCtrlC: true },
+      // Incremental: only changed lines are rewritten, which matters in slow terminals and panes.
+      { alternateScreen: true, exitOnCtrlC: true, incrementalRendering: true },
     );
     await app.waitUntilExit();
     if (!editing) return;

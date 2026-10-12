@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import {
   LOG_FILE,
-  SCHEMA_FILE,
   Store,
   __require,
+  appendLog,
   blockingIssues,
   buildPromptSection,
   canonicalPath,
@@ -22,15 +22,15 @@ import {
   renderObjectFooter,
   renderRootIndex,
   renderTypeIndex
-} from "./chunk-v9wsvhaf.js";
+} from "./chunk-e8x3gbg1.js";
 
 // src/cli/o6y.ts
-import { readFileSync as readFileSync4 } from "node:fs";
+import { readFileSync as readFileSync3 } from "node:fs";
 
 // src/cli/main.ts
-import { existsSync as existsSync3, readdirSync as readdirSync3, readFileSync as readFileSync3 } from "node:fs";
+import { existsSync as existsSync2, readdirSync as readdirSync2, readFileSync as readFileSync2 } from "node:fs";
 import { homedir } from "node:os";
-import { join as join3, relative as relative2, resolve } from "node:path";
+import { join as join2, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 // src/core/context.ts
@@ -56,112 +56,9 @@ function workPaths(cwd) {
 }
 
 // src/core/edit.ts
-import { existsSync as existsSync2, mkdirSync as mkdirSync2, readdirSync as readdirSync2, readFileSync as readFileSync2, rmdirSync as rmdirSync2, rmSync as rmSync2, writeFileSync as writeFileSync2 } from "node:fs";
-import { dirname as dirname3, join as join2 } from "node:path";
-import { isMap, isScalar, parse, parseDocument as parseDocument2, Scalar } from "yaml";
-
-// src/core/fsops.ts
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
-import { dirname as dirname2, join, relative } from "node:path";
-
-// src/core/format.ts
-import { parseDocument } from "yaml";
-var FORMAT_VERSION = 1;
-
-// src/core/fsops.ts
-function describe(layers, path) {
-  const info = classifyPath(layers, path);
-  if (!info)
-    return path;
-  switch (info.kind) {
-    case "object":
-      return info.id;
-    case "type-schema":
-      return `schema ${info.type}`;
-    case "root-schema":
-      return "root schema";
-    default:
-      return relative(info.layer.root, path);
-  }
-}
-function appendLog(layers, entries, via, now = new Date) {
-  const stamp = now.toISOString().replace(/\.\d{3}Z$/, "Z");
-  const byLayer = new Map;
-  for (const { action, path } of entries) {
-    const info = classifyPath(layers, path);
-    if (!info || info.kind === "log")
-      continue;
-    if (!byLayer.has(info.layer))
-      byLayer.set(info.layer, []);
-    byLayer.get(info.layer).push(`- ${stamp} ${action} ${describe(layers, path)} (${via})`);
-  }
-  for (const [layer, lines] of byLayer) {
-    const logPath = join(layer.root, LOG_FILE);
-    mkdirSync(layer.root, { recursive: true });
-    if (!existsSync(logPath))
-      writeFileSync(logPath, `# o6y log
-
-Append-only; written by o6y.
-
-`);
-    appendFileSync(logPath, lines.join(`
-`) + `
-`);
-  }
-}
-var STARTER_SCHEMAS = {
-  [SCHEMA_FILE]: `---
-o6yFormat: ${FORMAT_VERSION}
-summaryMaxLength: 80
-promptBudget: 8000
-pinnedBudget: 2500
----
-Memory of the user and their work: the people, preferences, decisions and tribal knowledge a
-teammate would need. Keep objects factual, concise and linked. The starter types are deliberately
-minimal; when a kind of note keeps recurring (systems, gotchas, runbooks…), give it its own type.
-`,
-  [`person/${SCHEMA_FILE}`]: `---
-description: Someone the user works with or mentions (teammate, reviewer, stakeholder)
-fields:
-  role: string
-  team: string
-index: [role]
----
-Who they are, what they own or know best, and how to work with them. If they review code, a
-\`## Review notes\` section (what they look for, recurring feedback) lets you pre-empt their review.
-`,
-  [`preference/${SCHEMA_FILE}`]: `---
-description: How the user or team wants things done (style, tools, workflow, communication)
-fields:
-  scope: { type: string, description: "who it applies to: user, team, or a project/repo name" }
-index: [scope]
-alwaysList: true
----
-Write the preference as an instruction you can follow, plus the reason if known. One preference
-per object; when it changes, update the object instead of adding a contradicting one.
-`,
-  [`note/${SCHEMA_FILE}`]: `---
-description: Any other durable knowledge — how a system works, a convention, a gotcha, a fact
-fields:
-  tags: list
-  related: { type: link, many: true }
-index: [tags]
----
-One topic per note, with a specific summary. Tag it (e.g. system, practice, gotcha) so related
-notes are easy to find, and link what it is about.
-`,
-  [`decision/${SCHEMA_FILE}`]: `---
-description: A choice that was made and should not be silently relitigated
-fields:
-  date: date
-  status: string
-index: [date]
----
-Context, what was decided, and the consequences. If it replaces an earlier decision, link that one.
-`
-};
-
-// src/core/edit.ts
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { dirname as dirname2, join } from "node:path";
+import { isMap, isScalar, parse, parseDocument, Scalar } from "yaml";
 var FENCE = /^---[ \t]*\r?\n([\s\S]*?)\r?\n?---[ \t]*(?:\r?\n|$)/;
 function splitDoc(text) {
   const match = FENCE.exec(text);
@@ -179,7 +76,7 @@ ${body}`;
 }
 function editFrontmatter(text, fn) {
   const { frontmatter, body } = splitDoc(text);
-  const doc = parseDocument2(frontmatter ?? "");
+  const doc = parseDocument(frontmatter ?? "");
   if (doc.errors.length)
     throw new Error(`invalid YAML frontmatter: ${doc.errors[0].message.split(`
 `)[0]}`);
@@ -295,7 +192,7 @@ class Plan {
     if (this.overlay.has(path))
       return this.overlay.get(path);
     try {
-      return readFileSync2(path, "utf8");
+      return readFileSync(path, "utf8");
     } catch {
       return null;
     }
@@ -312,13 +209,13 @@ class Plan {
   changes() {
     const out = [];
     for (const [path, content] of this.overlay) {
-      const exists = existsSync2(path);
+      const exists = existsSync(path);
       if (content === null) {
         if (exists)
           out.push({ action: "delete", path });
       } else if (!exists)
         out.push({ action: "create", path });
-      else if (readFileSync2(path, "utf8") !== content)
+      else if (readFileSync(path, "utf8") !== content)
         out.push({ action: "update", path });
     }
     return out;
@@ -337,18 +234,18 @@ class Plan {
     for (const { action, path } of changes) {
       if (action === "delete")
         continue;
-      mkdirSync2(dirname3(path), { recursive: true });
-      writeFileSync2(path, this.overlay.get(path));
+      mkdirSync(dirname2(path), { recursive: true });
+      writeFileSync(path, this.overlay.get(path));
     }
     for (const { action, path } of changes) {
       if (action !== "delete")
         continue;
-      rmSync2(path, { force: true });
-      const dir = dirname3(path);
+      rmSync(path, { force: true });
+      const dir = dirname2(path);
       const layer = findLayer(this.layers, path);
-      if (layer && dir !== layer.root && existsSync2(dir) && readdirSync2(dir).length === 0) {
+      if (layer && dir !== layer.root && existsSync(dir) && readdirSync(dir).length === 0) {
         try {
-          rmdirSync2(dir);
+          rmdirSync(dir);
         } catch {}
       }
     }
@@ -366,7 +263,7 @@ var JSON_OPT = { json: { type: "boolean" } };
 var IN = { in: { type: "string" } };
 function where(layers, path) {
   const layer = findLayer(layers, path);
-  return layer ? `${layer.name}:${relative2(layer.root, path)}` : displayPath(path);
+  return layer ? `${layer.name}:${relative(layer.root, path)}` : displayPath(path);
 }
 function needObject(store, id) {
   if (!id)
@@ -392,7 +289,7 @@ function pickLayer(ctx, name, fallback) {
 }
 function objectPath(layer, id) {
   const { type, slug } = needId(id);
-  return join3(layer.root, type, `${slug}.md`);
+  return join2(layer.root, type, `${slug}.md`);
 }
 function parseAssignments(items) {
   return items.map((item) => {
@@ -427,7 +324,7 @@ function commit(ctx, plan, via, dryRun) {
 }
 function readInput(ctx, file) {
   if (file)
-    return readFileSync3(resolve(ctx.cwd, file), "utf8");
+    return readFileSync2(resolve(ctx.cwd, file), "utf8");
   const stdin = ctx.stdin();
   if (stdin === undefined)
     throw new UsageError("pass the content with --file <path> or on stdin");
@@ -509,7 +406,7 @@ var COMMANDS = {
         return 0;
       }
       const obj = needObject(store, id);
-      ctx.out(readFileSync3(obj.path, "utf8").trimEnd() + `
+      ctx.out(readFileSync2(obj.path, "utf8").trimEnd() + `
 ` + renderObjectFooter(store, obj.id, obj.path));
       return 0;
     }
@@ -575,7 +472,7 @@ var COMMANDS = {
         `  rules     ${stats.rules}`,
         `  guidance  ${stats.guidance}`,
         `  pinned    ${stats.pinned}  (pinnedBudget ${store.settings.pinnedBudget})`,
-        `  catalog   ${stats.catalog} of promptBudget ${stats.budget} (${pct(stats.catalog)})`,
+        `  catalog   ${stats.catalog}: full lines ${stats.lines} of promptBudget ${stats.budget} (${pct(stats.lines)}), slugs ${stats.names} of namesBudget ${stats.namesBudget}`,
         `objects: ${stats.objects} — ${stats.full} full lines, ${stats.named} by slug, ${stats.hidden} only in index.md`,
         stats.relevant.length ? `relevant to this directory: ${stats.relevant.join(", ")}` : "relevant to this directory: none"
       ].join(`
@@ -600,7 +497,7 @@ var COMMANDS = {
         stores: ctx.layers.map((l) => ({
           name: l.name,
           root: l.root,
-          exists: existsSync3(l.root),
+          exists: existsSync2(l.root),
           objects: [...store.objects.values()].filter((obj) => obj.layer.name === l.name).length
         })),
         types: types.map((t) => ({ name: t.name, layer: t.layer.name, objects: store.objectsOfType(t.name).length })),
@@ -634,10 +531,10 @@ var COMMANDS = {
       const since = o.since ? parseSince(o.since) : 0;
       const entries = [];
       for (const layer of ctx.layers) {
-        const path = join3(layer.root, LOG_FILE);
-        if (!existsSync3(path))
+        const path = join2(layer.root, LOG_FILE);
+        if (!existsSync2(path))
           continue;
-        for (const line of readFileSync3(path, "utf8").split(`
+        for (const line of readFileSync2(path, "utf8").split(`
 `)) {
           const m = /^- (\S+) (.+)$/.exec(line);
           const at = m ? Date.parse(m[1]) : NaN;
@@ -710,7 +607,7 @@ var COMMANDS = {
       if (!target)
         throw new UsageError("missing target id or path");
       const store = ctx.load();
-      const path = target.includes("/") && (target.endsWith(".md") || target.startsWith(".") || target.startsWith("/") || target.startsWith("~")) ? canonicalPath(resolve(ctx.cwd, target.startsWith("~/") ? join3(homedir(), target.slice(2)) : target)) : store.objects.get(target)?.path ?? objectPath(pickLayer(ctx, o.in), target);
+      const path = target.includes("/") && (target.endsWith(".md") || target.startsWith(".") || target.startsWith("/") || target.startsWith("~")) ? canonicalPath(resolve(ctx.cwd, target.startsWith("~/") ? join2(homedir(), target.slice(2)) : target)) : store.objects.get(target)?.path ?? objectPath(pickLayer(ctx, o.in), target);
       if (!classifyPath(ctx.layers, path))
         throw new UsageError(`${target} is not inside an o6y store`);
       const plan = new Plan(ctx.layers);
@@ -737,7 +634,7 @@ var COMMANDS = {
       if (!o.summary)
         throw new UsageError("--summary is required");
       const path = objectPath(pickLayer(ctx, o.in), id);
-      const body = o["body-file"] ? readFileSync3(resolve(ctx.cwd, o["body-file"]), "utf8") : o.body ?? "";
+      const body = o["body-file"] ? readFileSync2(resolve(ctx.cwd, o["body-file"]), "utf8") : o.body ?? "";
       const content = editFrontmatter("", (doc) => {
         doc.set("summary", o.summary);
         for (const [k, v] of parseAssignments(o.set ?? []))
@@ -974,14 +871,14 @@ ${extra}
         }
       }
       for (const layer of ctx.layers) {
-        const dir = join3(layer.root, from);
-        if (!existsSync3(dir))
+        const dir = join2(layer.root, from);
+        if (!existsSync2(dir))
           continue;
-        for (const file of readdirSync3(dir)) {
+        for (const file of readdirSync2(dir)) {
           if (!file.endsWith(".md"))
             continue;
-          const path = join3(dir, file);
-          plan.write(join3(layer.root, to, file), plan.read(path));
+          const path = join2(dir, file);
+          plan.write(join2(layer.root, to, file), plan.read(path));
           plan.delete(path);
         }
       }
@@ -995,8 +892,9 @@ ${extra}
     async run(ctx, [id], o) {
       if (!ctx.isTTY)
         throw new UsageError("the viewer needs an interactive terminal");
-      const { runViewer } = await import("./chunk-mg2bf5y5.js");
-      await runViewer(ctx.layers, { current: id, view: o.tree ? "tree" : "browse", history: [], filter: "" });
+      process.env.NODE_ENV ??= "production";
+      const { runViewer } = await import("./chunk-yzan5rtg.js");
+      await runViewer(ctx.layers, { current: id, view: o.tree ? "tree" : "browse", history: [], filter: "", open: [] });
       return 0;
     }
   }
@@ -1023,7 +921,7 @@ function help() {
 `);
 }
 function expandHome(p) {
-  return p === "~" || p.startsWith("~/") ? join3(homedir(), p.slice(1)) : p;
+  return p === "~" || p.startsWith("~/") ? join2(homedir(), p.slice(1)) : p;
 }
 async function main(argv, io) {
   const args = [...argv];
@@ -1037,7 +935,7 @@ async function main(argv, io) {
   };
   const globalFlag = take("--global");
   const projectFlag = take("--project");
-  const layers = makeLayers(resolve(io.cwd, expandHome(globalFlag || io.env.O6Y_HOME || join3(homedir(), ".agents", "o6y"))), resolve(io.cwd, expandHome(projectFlag || io.env.O6Y_PROJECT || join3(io.cwd, ".agents", "o6y"))));
+  const layers = makeLayers(resolve(io.cwd, expandHome(globalFlag || io.env.O6Y_HOME || join2(homedir(), ".agents", "o6y"))), resolve(io.cwd, expandHome(projectFlag || io.env.O6Y_PROJECT || join2(io.cwd, ".agents", "o6y"))));
   const ctx = { ...io, layers, load: () => Store.load(layers) };
   let name = args.shift();
   if (!name)
@@ -1089,6 +987,6 @@ process.exitCode = await main(process.argv.slice(2), {
 `),
   err: (text) => process.stderr.write(`${text}
 `),
-  stdin: () => process.stdin.isTTY ? undefined : readFileSync4(0, "utf8"),
+  stdin: () => process.stdin.isTTY ? undefined : readFileSync3(0, "utf8"),
   isTTY: !!process.stdin.isTTY && !!process.stdout.isTTY
 });

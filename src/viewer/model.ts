@@ -25,10 +25,27 @@ export const plain = (line: Line): string => line.map((s) => s.text).join("");
 // ── browse tree ──────────────────────────────────────────────────────────
 
 export type Row =
-  | { kind: "type"; name: string; count: number; layer: string }
+  | { kind: "type"; name: string; count: number; layer: string; open: boolean }
   | { kind: "object"; id: string; obj: ObjectEntry }
-  | { kind: "wanted-header"; count: number }
+  | { kind: "wanted-header"; count: number; open: boolean }
   | { kind: "wanted"; id: string; sources: number };
+
+/** Header row keys; object and wanted rows are keyed by their id. */
+export const typeKey = (name: string) => `type:${name}`;
+export const WANTED_KEY = "wanted:";
+
+export function rowKey(row: Row): string {
+  if (row.kind === "type") return typeKey(row.name);
+  if (row.kind === "wanted-header") return WANTED_KEY;
+  return row.id;
+}
+
+/** The header key a row sits under. */
+export function parentKey(store: Store, key: string): string | undefined {
+  if (key.startsWith("type:") || key === WANTED_KEY) return undefined;
+  const obj = store.objects.get(key);
+  return obj ? typeKey(obj.type) : WANTED_KEY;
+}
 
 export function matches(store: Store, id: string, query: string): boolean {
   if (!query) return true;
@@ -39,20 +56,33 @@ export function matches(store: Store, id: string, query: string): boolean {
   return obj.summary.toLowerCase().includes(q) || obj.body.toLowerCase().includes(q);
 }
 
-/** Types with their objects, then wanted pages. Empty types are hidden while filtering. */
-export function treeRows(store: Store, query = ""): Row[] {
+/**
+ * Types with their objects, then wanted pages. Only headers whose key is in `open` show their
+ * rows; while filtering, every matching group is open and empty types are hidden.
+ */
+export function treeRows(store: Store, query = "", open: Set<string> | "all" = "all"): Row[] {
+  const isOpen = (key: string) => open === "all" || !!query || open.has(key);
+  const byType = new Map<string, ObjectEntry[]>();
+  for (const obj of store.objects.values()) {
+    if (!matches(store, obj.id, query)) continue;
+    const list = byType.get(obj.type) ?? [];
+    list.push(obj);
+    byType.set(obj.type, list);
+  }
   const rows: Row[] = [];
   const types = [...store.types.values()].sort((a, b) => a.name.localeCompare(b.name));
   for (const type of types) {
-    const objects = store.objectsOfType(type.name).filter((o) => matches(store, o.id, query));
+    const objects = (byType.get(type.name) ?? []).sort((a, b) => a.id.localeCompare(b.id));
     if (query && !objects.length) continue;
-    rows.push({ kind: "type", name: type.name, count: objects.length, layer: type.layer.name });
-    for (const obj of objects) rows.push({ kind: "object", id: obj.id, obj });
+    const open = isOpen(typeKey(type.name));
+    rows.push({ kind: "type", name: type.name, count: objects.length, layer: type.layer.name, open });
+    if (open) for (const obj of objects) rows.push({ kind: "object", id: obj.id, obj });
   }
   const wanted = [...store.wanted].filter(([id]) => matches(store, id, query)).sort(([a], [b]) => a.localeCompare(b));
   if (wanted.length) {
-    rows.push({ kind: "wanted-header", count: wanted.length });
-    for (const [id, sources] of wanted) rows.push({ kind: "wanted", id, sources: sources.size });
+    const open = isOpen(WANTED_KEY);
+    rows.push({ kind: "wanted-header", count: wanted.length, open });
+    if (open) for (const [id, sources] of wanted) rows.push({ kind: "wanted", id, sources: sources.size });
   }
   return rows;
 }
@@ -240,6 +270,58 @@ export function renderPage(store: Store, id: string, width: number, changed?: Se
   };
   section("Links", nb.out, "→");
   section("Backlinks", nb.in, "←");
+  return { lines, links, linkLines };
+}
+
+/** The page for a type header: description, schema, guidance and its objects (as links). */
+export function renderTypePage(store: Store, typeName: string, width: number): Page {
+  const type = store.types.get(typeName);
+  const lines: Line[] = [];
+  const links: string[] = [];
+  const linkLines: number[] = [];
+  if (!type) return { lines: [[{ text: `no type ${typeName}`, color: "red" }]], links, linkLines };
+  const objects = store.objectsOfType(typeName);
+  lines.push([{ text: typeName, bold: true, color: "magenta" }, { text: ` ${type.layer.name} · ${objects.length} objects`, dim: true }]);
+  for (const w of wrap(type.schema.description, width)) lines.push([{ text: w, italic: true }]);
+  lines.push([{ text: displayPath(type.path), dim: true }]);
+  const fields = Object.entries(type.schema.fields);
+  if (fields.length) {
+    lines.push([]);
+    const keyWidth = Math.min(16, Math.max(...fields.map(([k]) => k.length)));
+    for (const [name, f] of fields) {
+      const spec = [f.type === "link" ? `link→${f.to === "any" || !f.to ? "any" : f.to.join("|")}${f.many ? "[]" : ""}` : f.type === "enum" ? `enum(${f.values!.join("|")})` : f.type, f.required ? "required" : ""]
+        .filter(Boolean)
+        .join(", ");
+      lines.push([{ text: name.padEnd(keyWidth) + "  ", color: "blue" }, { text: truncate(spec + (f.description ? ` — ${f.description}` : ""), width - keyWidth - 2) }]);
+    }
+  }
+  if (type.schema.guidance) {
+    lines.push([{ text: "─".repeat(Math.max(0, width)), dim: true }]);
+    lines.push(...markdownLines(store, type.schema.guidance, width));
+  }
+  if (objects.length) {
+    lines.push([], [{ text: `Objects (${objects.length})`, bold: true }]);
+    for (const obj of objects) {
+      links.push(obj.id);
+      linkLines.push(lines.length);
+      const slug = obj.slug;
+      lines.push([{ text: `  ${slug}`, color: "cyan" }, { text: truncate(` — ${obj.summary}`, Math.max(0, width - slug.length - 2)), dim: true }]);
+    }
+  }
+  return { lines, links, linkLines };
+}
+
+/** The page for the wanted header: every linked-but-missing page and who links to it. */
+export function renderWantedPage(store: Store, width: number): Page {
+  const lines: Line[] = [[{ text: "Wanted pages", bold: true, color: "red" }, { text: ` ${store.wanted.size}`, dim: true }]];
+  lines.push([{ text: "Linked from somewhere but not written yet.", dim: true }], []);
+  const links: string[] = [];
+  const linkLines: number[] = [];
+  for (const [id, sources] of [...store.wanted].sort(([a], [b]) => a.localeCompare(b))) {
+    links.push(id);
+    linkLines.push(lines.length);
+    lines.push([{ text: `  ${id}`, color: "red" }, { text: truncate(` ← ${[...sources].sort().join(", ")}`, Math.max(0, width - id.length - 2)), dim: true }]);
+  }
   return { lines, links, linkLines };
 }
 

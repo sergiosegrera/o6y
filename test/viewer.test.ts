@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { makeLayers, Store } from "../src/core/store.ts";
-import { joinParagraphs, linkTree, neighbors, plain, renderPage, treeLine, treeRows, wrap } from "../src/viewer/model.ts";
+import { joinParagraphs, linkTree, renderTypePage, renderWantedPage, rowKey, typeKey, WANTED_KEY, neighbors, plain, renderPage, treeLine, treeRows, wrap } from "../src/viewer/model.ts";
 
 let tmp: string;
 let root: string;
@@ -46,6 +46,21 @@ test("treeRows: types, objects, wanted; filtering", () => {
   expect(rows.map((r) => r.kind)).toEqual(["type", "object", "object", "object", "wanted-header", "wanted"]);
   const filtered = treeRows(store, "back to");
   expect(filtered.filter((r) => r.kind === "object").map((r) => (r as { id: string }).id)).toEqual(["note/b"]);
+});
+
+test("treeRows: headers collapsed unless open; filtering opens matches", () => {
+  const store = load();
+  expect(treeRows(store, "", new Set()).map(rowKey)).toEqual(["type:note", WANTED_KEY]);
+  expect(treeRows(store, "", new Set([typeKey("note")])).map(rowKey)).toEqual(["type:note", "note/a", "note/b", "note/c", WANTED_KEY]);
+  expect(treeRows(store, "ghost", new Set()).map(rowKey)).toEqual(["type:note", "note/c", WANTED_KEY, "note/ghost"]);
+});
+
+test("type and wanted pages list their objects as links", () => {
+  const store = load();
+  const type = renderTypePage(store, "note", 60);
+  expect(type.links).toEqual(["note/a", "note/b", "note/c"]);
+  expect(type.lines.map(plain).join("\n")).toContain("related  link→any[]");
+  expect(renderWantedPage(store, 60).links).toEqual(["note/ghost"]);
 });
 
 test("renderPage: fields, joined body, links and backlinks", () => {

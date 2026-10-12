@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.5.0
+
+- **Memory list in the prompt** (from feedback on a real 167-object store):
+  - Every object is listed: slug lists no longer count against `promptBudget` and have their own `namesBudget` (default 10000 chars, about 400 objects).
+  - Directory matches come first. `alwaysList` types follow, capped at 35% of the budget.
+  - Relevance counts only objects that link *to* a directory match (backlinks), most linked first, capped at 40%. Before, every neighbor counted, so a hub marked half the store relevant.
+  - Path fields are matched inside prose (`~/Projects/north (primary checkout)`).
+  - Prompt lines drop the `fields:` line and index-field values (`index.md` keeps them), which leaves more room for full lines.
+  - The section is rebuilt before a prompt when the store has changed, so memory written mid-session shows up in the next turn. Pi appends it as a delta, so the prompt cache keeps working.
+- **Viewer:** types start collapsed (`enter`/`→` expands, `←` collapses, `x`/`X` collapse or expand all, `[`/`]` jump between types). Selecting a type shows its description, fields, guidance and objects. It renders with React's production build and Ink's incremental rendering, which redraws only changed lines.
+
 ## 0.4.0
 
 - **The `o6y` command** replaces the `o6y_query` and `o6y_lint` tools, so o6y no longer adds tool schemas to every prompt. The extension puts it on the agent's PATH automatically (it runs on the Node that runs pi). It covers read commands (`query`, `show`, `links`, `backlinks`, `index`, `lint`, `stats`, `log`, `prompt --stats`, `export --format json|mermaid|dot`) and validated write commands (`new`, `set`, `mv` with link rewriting, `merge`, `rm`, `field add|rename|drop`, `type rename`, and `check` for drafts). Write commands validate the whole change before writing, log with the command name, and take `--dry-run`.

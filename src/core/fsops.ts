@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { FORMAT_VERSION } from "./format.ts";
 import { classifyPath, type Layer, LOG_FILE, SCHEMA_FILE } from "./store.ts";
@@ -147,6 +147,7 @@ export const STARTER_SCHEMAS: Record<string, string> = {
 o6yFormat: ${FORMAT_VERSION}
 summaryMaxLength: 80
 promptBudget: 8000
+namesBudget: 10000
 pinnedBudget: 2500
 ---
 Memory of the user and their work: the people, preferences, decisions and tribal knowledge a
@@ -206,4 +207,30 @@ export function bootstrap(root: string): string[] {
     written.push(path);
   }
   return written;
+}
+
+/** Cheap fingerprint of the stores' files (path, size, mtime), to notice changes without parsing. */
+export function storeSignature(layers: Layer[]): string {
+  const walk = (dir: string, depth: number): string => {
+    if (depth > 2) return "";
+    let out = "";
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return "";
+    }
+    for (const e of entries) {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) out += `${full}/\n${walk(full, depth + 1)}`;
+      else {
+        try {
+          const st = statSync(full);
+          out += `${full}:${st.size}:${st.mtimeMs}\n`;
+        } catch {}
+      }
+    }
+    return out;
+  };
+  return layers.map((l) => walk(l.root, 0)).join("\0");
 }

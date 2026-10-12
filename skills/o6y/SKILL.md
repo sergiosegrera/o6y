@@ -56,16 +56,17 @@ and it is shown in the type's index.md.
 Field options: `required`, `description`, plus `values` for enums and `to` / `many` for links.
 `summary` and `pinned` are reserved and implicit in every type, so don't declare them.
 
-Use `alwaysList: true` for types whose summaries should always be in front of you (the starter `preference` type has it). Keep such types small.
+Use `alwaysList: true` for types whose summaries should always be in front of you (the starter `preference` type has it). They get up to 35% of the prompt budget, so keep such types small.
 
-Objects with a path field (e.g. `location: ~/Projects/north`) are ranked first in the prompt when you work inside that path, along with everything they link to or from. A `location` field on repo or system objects is therefore worth having.
+Objects with a path field (e.g. `location: ~/Projects/north`) are ranked first in the prompt when you work inside that path, followed by the objects that link to them. A `location` field on repo or system objects is therefore worth having. Keep it a plain path, or a list of paths, rather than prose.
 
 ## Root schema: `<store>/.schema.md`
 
 ```md
 ---
 summaryMaxLength: 80   # max chars of every object's summary
-promptBudget: 8000     # max chars of the object catalog in the system prompt (rules, guidance, pinned excluded)
+promptBudget: 8000     # max chars of full object lines in the system prompt (rules, guidance, pinned excluded)
+namesBudget: 10000     # max chars of the slug lists that name every other object
 pinnedBudget: 2500     # max chars (summary + body) of all pinned objects combined
 ---
 Guidance for the whole store (shown in the system prompt).

@@ -93,7 +93,7 @@ describe("read commands", () => {
   test("prompt, stats, log, export", async () => {
     expect((await o6y("prompt")).out).toContain("[[note/ledger]]");
     const stats = await o6y("prompt --stats");
-    expect(stats.out).toMatch(/catalog +\d+ of promptBudget 8000/);
+    expect(stats.out).toMatch(/full lines \d+ of promptBudget 8000 \(\d+%\), slugs \d+ of namesBudget 10000/);
     expect(stats.out).toContain("4 full lines");
     expect((await o6y("stats")).out).toContain("types: note 2 · person 1 · team 1");
     await o6y('set note/api summary="Payments HTTP API"');

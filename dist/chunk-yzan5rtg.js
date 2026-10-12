@@ -2,8 +2,9 @@
 import {
   Store,
   displayPath,
-  neighbors
-} from "./chunk-v9wsvhaf.js";
+  neighbors,
+  storeSignature
+} from "./chunk-e8x3gbg1.js";
 
 // src/viewer/run.tsx
 import { spawnSync } from "node:child_process";
@@ -15,6 +16,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 // src/viewer/model.ts
 import { stringify } from "yaml";
+var typeKey = (name) => `type:${name}`;
+var WANTED_KEY = "wanted:";
+function rowKey(row) {
+  if (row.kind === "type")
+    return typeKey(row.name);
+  if (row.kind === "wanted-header")
+    return WANTED_KEY;
+  return row.id;
+}
+function parentKey(store, key) {
+  if (key.startsWith("type:") || key === WANTED_KEY)
+    return;
+  const obj = store.objects.get(key);
+  return obj ? typeKey(obj.type) : WANTED_KEY;
+}
 function matches(store, id, query) {
   if (!query)
     return true;
@@ -26,26 +42,38 @@ function matches(store, id, query) {
     return false;
   return obj.summary.toLowerCase().includes(q) || obj.body.toLowerCase().includes(q);
 }
-function treeRows(store, query = "") {
+function treeRows(store, query = "", open = "all") {
+  const isOpen = (key) => open === "all" || !!query || open.has(key);
+  const byType = new Map;
+  for (const obj of store.objects.values()) {
+    if (!matches(store, obj.id, query))
+      continue;
+    const list = byType.get(obj.type) ?? [];
+    list.push(obj);
+    byType.set(obj.type, list);
+  }
   const rows = [];
   const types = [...store.types.values()].sort((a, b) => a.name.localeCompare(b.name));
   for (const type of types) {
-    const objects = store.objectsOfType(type.name).filter((o) => matches(store, o.id, query));
+    const objects = (byType.get(type.name) ?? []).sort((a, b) => a.id.localeCompare(b.id));
     if (query && !objects.length)
       continue;
-    rows.push({ kind: "type", name: type.name, count: objects.length, layer: type.layer.name });
-    for (const obj of objects)
-      rows.push({ kind: "object", id: obj.id, obj });
+    const open2 = isOpen(typeKey(type.name));
+    rows.push({ kind: "type", name: type.name, count: objects.length, layer: type.layer.name, open: open2 });
+    if (open2)
+      for (const obj of objects)
+        rows.push({ kind: "object", id: obj.id, obj });
   }
   const wanted = [...store.wanted].filter(([id]) => matches(store, id, query)).sort(([a], [b]) => a.localeCompare(b));
   if (wanted.length) {
-    rows.push({ kind: "wanted-header", count: wanted.length });
-    for (const [id, sources] of wanted)
-      rows.push({ kind: "wanted", id, sources: sources.size });
+    const open2 = isOpen(WANTED_KEY);
+    rows.push({ kind: "wanted-header", count: wanted.length, open: open2 });
+    if (open2)
+      for (const [id, sources] of wanted)
+        rows.push({ kind: "wanted", id, sources: sources.size });
   }
   return rows;
 }
-var selectable = (row) => row.kind === "object" || row.kind === "wanted";
 function truncate(text, width) {
   if (width <= 0)
     return "";
@@ -224,6 +252,54 @@ function renderPage(store, id, width, changed) {
   section("Backlinks", nb.in, "←");
   return { lines, links, linkLines };
 }
+function renderTypePage(store, typeName, width) {
+  const type = store.types.get(typeName);
+  const lines = [];
+  const links = [];
+  const linkLines = [];
+  if (!type)
+    return { lines: [[{ text: `no type ${typeName}`, color: "red" }]], links, linkLines };
+  const objects = store.objectsOfType(typeName);
+  lines.push([{ text: typeName, bold: true, color: "magenta" }, { text: ` ${type.layer.name} · ${objects.length} objects`, dim: true }]);
+  for (const w of wrap(type.schema.description, width))
+    lines.push([{ text: w, italic: true }]);
+  lines.push([{ text: displayPath(type.path), dim: true }]);
+  const fields = Object.entries(type.schema.fields);
+  if (fields.length) {
+    lines.push([]);
+    const keyWidth = Math.min(16, Math.max(...fields.map(([k]) => k.length)));
+    for (const [name, f] of fields) {
+      const spec = [f.type === "link" ? `link→${f.to === "any" || !f.to ? "any" : f.to.join("|")}${f.many ? "[]" : ""}` : f.type === "enum" ? `enum(${f.values.join("|")})` : f.type, f.required ? "required" : ""].filter(Boolean).join(", ");
+      lines.push([{ text: name.padEnd(keyWidth) + "  ", color: "blue" }, { text: truncate(spec + (f.description ? ` — ${f.description}` : ""), width - keyWidth - 2) }]);
+    }
+  }
+  if (type.schema.guidance) {
+    lines.push([{ text: "─".repeat(Math.max(0, width)), dim: true }]);
+    lines.push(...markdownLines(store, type.schema.guidance, width));
+  }
+  if (objects.length) {
+    lines.push([], [{ text: `Objects (${objects.length})`, bold: true }]);
+    for (const obj of objects) {
+      links.push(obj.id);
+      linkLines.push(lines.length);
+      const slug = obj.slug;
+      lines.push([{ text: `  ${slug}`, color: "cyan" }, { text: truncate(` — ${obj.summary}`, Math.max(0, width - slug.length - 2)), dim: true }]);
+    }
+  }
+  return { lines, links, linkLines };
+}
+function renderWantedPage(store, width) {
+  const lines = [[{ text: "Wanted pages", bold: true, color: "red" }, { text: ` ${store.wanted.size}`, dim: true }]];
+  lines.push([{ text: "Linked from somewhere but not written yet.", dim: true }], []);
+  const links = [];
+  const linkLines = [];
+  for (const [id, sources] of [...store.wanted].sort(([a], [b]) => a.localeCompare(b))) {
+    links.push(id);
+    linkLines.push(lines.length);
+    lines.push([{ text: `  ${id}`, color: "red" }, { text: truncate(` ← ${[...sources].sort().join(", ")}`, Math.max(0, width - id.length - 2)), dim: true }]);
+  }
+  return { lines, links, linkLines };
+}
 function linkTree(store, root, expanded) {
   const rows = [];
   const childrenOf = (id, parent) => {
@@ -291,33 +367,7 @@ function treeLine(store, node, width, selected, changed) {
 }
 
 // src/viewer/watch.ts
-import { existsSync, readdirSync, statSync, watch } from "node:fs";
-import { join } from "node:path";
-function signature(dir, depth = 0) {
-  if (depth > 2)
-    return "";
-  let out = "";
-  let entries;
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return "";
-  }
-  for (const e of entries) {
-    const full = join(dir, e.name);
-    if (e.isDirectory())
-      out += `${full}/
-${signature(full, depth + 1)}`;
-    else {
-      try {
-        const s = statSync(full);
-        out += `${full}:${s.size}:${s.mtimeMs}
-`;
-      } catch {}
-    }
-  }
-  return out;
-}
+import { existsSync, watch } from "node:fs";
 function watchStores(layers, onChange, pollMs = 1500) {
   let timer;
   const fire = () => {
@@ -332,9 +382,9 @@ function watchStores(layers, onChange, pollMs = 1500) {
       watchers.push(watch(layer.root, { recursive: true }, fire));
     } catch {}
   }
-  let last = layers.map((l) => signature(l.root)).join("\x00");
+  let last = storeSignature(layers);
   const poll = setInterval(() => {
-    const now = layers.map((l) => signature(l.root)).join("\x00");
+    const now = storeSignature(layers);
     if (now !== last) {
       last = now;
       fire();
@@ -382,6 +432,7 @@ function App({ layers, initial, onEdit }) {
   const [scroll, setScroll] = useState(0);
   const [filter, setFilter] = useState(initial.filter);
   const [searching, setSearching] = useState(false);
+  const [open, setOpen] = useState(() => new Set(initial.open ?? []));
   const [expanded, setExpanded] = useState(new Set);
   const [treeCursor, setTreeCursor] = useState();
   const treeMemory = useRef(new Map);
@@ -421,29 +472,50 @@ function App({ layers, initial, onEdit }) {
   const narrow = columns < 80;
   const leftWidth = narrow ? columns - 2 : clamp(Math.floor(columns * 0.3), 24, 44);
   const rightWidth = narrow ? Math.max(10, columns - 4) : Math.max(10, columns - leftWidth - 6);
-  const tree = useMemo(() => treeRows(store, filter), [store, filter]);
-  const ids = useMemo(() => tree.filter(selectable).map((r) => r.id), [tree]);
-  let cursor = current ? tree.findIndex((r) => selectable(r) && r.id === current) : -1;
-  const exists = (id2) => store.objects.has(id2) || store.wanted.has(id2);
+  const tree = useMemo(() => treeRows(store, filter, open), [store, filter, open]);
+  const keys = useMemo(() => tree.map(rowKey), [tree]);
+  let cursor = current ? keys.indexOf(current) : -1;
+  const exists = (key) => key.startsWith("type:") ? store.types.has(key.slice(5)) : key === WANTED_KEY ? store.wanted.size > 0 : store.objects.has(key) || store.wanted.has(key);
   const selected = current && exists(current) && (cursor >= 0 || view === "tree") ? current : undefined;
-  if (!selected) {
-    const sel = tree.map((r, i) => [r, i]).filter(([r]) => selectable(r));
-    const pick = sel.find(([, i]) => i >= lastIndex.current) ?? sel[sel.length - 1];
-    cursor = pick ? pick[1] : -1;
-  }
-  const id = selected ?? (cursor >= 0 ? tree[cursor].id : undefined);
+  if (!selected)
+    cursor = keys.length ? clamp(lastIndex.current, 0, keys.length - 1) : -1;
+  const selectedKey = selected ?? (cursor >= 0 ? keys[cursor] : undefined);
+  const row = cursor >= 0 ? tree[cursor] : undefined;
+  const isHeader = (key) => !!key && (key.startsWith("type:") || key === WANTED_KEY);
+  const id = isHeader(selectedKey) ? undefined : selectedKey;
   if (cursor >= 0)
     lastIndex.current = cursor;
-  const page = useMemo(() => id ? renderPage(store, id, rightWidth, changedIds) : undefined, [store, id, rightWidth, changedIds]);
+  useEffect(() => {
+    const parent = current ? parentKey(store, current) : undefined;
+    if (parent && !open.has(parent))
+      setOpen((prev) => new Set(prev).add(parent));
+  }, [current, store]);
+  const toggle = (key, on) => setOpen((prev) => {
+    const next = new Set(prev);
+    if (on)
+      next.add(key);
+    else
+      next.delete(key);
+    return next;
+  });
+  const page = useMemo(() => {
+    if (!selectedKey)
+      return;
+    if (selectedKey.startsWith("type:"))
+      return renderTypePage(store, selectedKey.slice(5), rightWidth);
+    if (selectedKey === WANTED_KEY)
+      return renderWantedPage(store, rightWidth);
+    return renderPage(store, selectedKey, rightWidth, changedIds);
+  }, [store, selectedKey, rightWidth, changedIds]);
   const openKeys = useMemo(() => id && !expanded.size ? new Set([id]) : expanded, [id, expanded]);
   const nodes = useMemo(() => id && view === "tree" ? linkTree(store, id, openKeys) : [], [store, id, openKeys, view]);
   const nodeIndex = Math.max(0, nodes.findIndex((n) => n.key === treeCursor));
   const node = nodes[nodeIndex];
   const go = (target, push = true) => {
-    if (target === id)
+    if (target === selectedKey)
       return;
-    if (push && id)
-      setHistory((h) => [...h.slice(-49), id]);
+    if (push && selectedKey)
+      setHistory((h) => [...h.slice(-49), selectedKey]);
     setCurrent(target);
     setLinkIdx(0);
     setScroll(0);
@@ -452,7 +524,7 @@ function App({ layers, initial, onEdit }) {
     const saved = treeMemory.current.get(target);
     setExpanded(saved?.expanded ?? new Set);
     setTreeCursor(saved?.cursor);
-    if (filter && !treeRows(store, filter).some((r) => selectable(r) && r.id === target))
+    if (filter && !treeRows(store, filter).some((r) => rowKey(r) === target))
       setFilter("");
   };
   const back = () => {
@@ -463,11 +535,10 @@ function App({ layers, initial, onEdit }) {
     go(prev, false);
   };
   const moveList = (delta) => {
-    if (!ids.length)
+    if (!keys.length)
       return;
-    const i = id ? ids.indexOf(id) : -1;
-    const next = ids[clamp(i + delta, 0, ids.length - 1)];
-    if (next !== id) {
+    const next = keys[clamp(cursor + delta, 0, keys.length - 1)];
+    if (next !== selectedKey) {
       setCurrent(next);
       setLinkIdx(0);
       setScroll(0);
@@ -484,7 +555,7 @@ function App({ layers, initial, onEdit }) {
     const obj = id ? store.objects.get(id) : undefined;
     if (!obj)
       return;
-    onEdit(obj.path, { current: id, view, history, filter });
+    onEdit(obj.path, { current: id, view, history, filter, open: [...open] });
     exit();
   };
   useInput((input, key) => {
@@ -525,8 +596,11 @@ function App({ layers, initial, onEdit }) {
       setFocus("list");
       return;
     }
-    if (input === "t" || input === "g" || input === "2")
+    if (input === "t" || input === "g" || input === "2") {
+      if (view !== "tree" && !id)
+        return;
       return setView(view === "tree" && input !== "2" ? "browse" : "tree");
+    }
     if (input === "1")
       return setView("browse");
     if (input === "e")
@@ -536,9 +610,9 @@ function App({ layers, initial, onEdit }) {
     if (input === "b" || key.backspace || key.delete)
       return back();
     if (view === "tree") {
-      const toggle = (key2, open) => setExpanded((prev) => {
+      const toggle2 = (key2, open2) => setExpanded((prev) => {
         const next = new Set(prev.size || !id ? prev : [id]);
-        if (open)
+        if (open2)
           next.add(key2);
         else
           next.delete(key2);
@@ -552,17 +626,17 @@ function App({ layers, initial, onEdit }) {
         setTreeCursor(nodes[Math.max(0, nodeIndex - 1)].key);
       else if (key.rightArrow || input === "l") {
         if (node.expandable && !node.expanded)
-          toggle(node.key, true);
+          toggle2(node.key, true);
         else if (node.expanded)
           setTreeCursor(nodes[nodeIndex + 1]?.key);
       } else if (key.leftArrow || input === "h") {
         if (node.expanded)
-          toggle(node.key, false);
+          toggle2(node.key, false);
         else if (node.depth > 0)
           setTreeCursor(node.key.slice(0, node.key.lastIndexOf(">")));
       } else if (input === " ") {
         if (node.expandable)
-          toggle(node.key, !node.expanded);
+          toggle2(node.key, !node.expanded);
       } else if (key.return) {
         if (node.depth > 0)
           go(node.id);
@@ -581,6 +655,41 @@ function App({ layers, initial, onEdit }) {
     }
     if (key.tab)
       return setFocus(focus === "list" ? "page" : "list");
+    if (focus === "list" && !filter) {
+      const header2 = row && (row.kind === "type" || row.kind === "wanted-header") ? row : undefined;
+      const headerKey = header2 ? rowKey(header2) : undefined;
+      if (header2 && headerKey && (key.return || key.rightArrow || input === "l" || input === " ")) {
+        if (!header2.open)
+          return toggle(headerKey, true);
+        if (key.rightArrow || input === "l")
+          return moveList(1);
+        return toggle(headerKey, false);
+      }
+      if (key.leftArrow || input === "h") {
+        if (header2 && headerKey && header2.open)
+          return toggle(headerKey, false);
+        const parent = selectedKey ? parentKey(store, selectedKey) : undefined;
+        if (parent)
+          return setCurrent(parent);
+        return;
+      }
+      if (input === "x") {
+        const parent = selectedKey ? parentKey(store, selectedKey) ?? selectedKey : undefined;
+        setOpen(new Set);
+        if (parent)
+          setCurrent(parent);
+        return;
+      }
+      if (input === "X")
+        return setOpen(new Set([...[...store.types.keys()].map(typeKey), WANTED_KEY]));
+      if (input === "[" || input === "]") {
+        const headers = tree.map((r, i) => [r, i]).filter(([r]) => r.kind === "type" || r.kind === "wanted-header");
+        const target = input === "]" ? headers.find(([, i]) => i > cursor) : [...headers].reverse().find(([, i]) => i < cursor);
+        if (target)
+          setCurrent(rowKey(target[0]));
+        return;
+      }
+    }
     if (key.pageDown || input === " " || key.ctrl && input === "d")
       return setScroll((s) => Math.min(maxScroll, s + innerHeight - 2));
     if (key.pageUp || key.ctrl && input === "u")
@@ -757,7 +866,7 @@ function App({ layers, initial, onEdit }) {
       })
     ]
   });
-  const footerText = searching ? null : narrow ? view === "tree" ? "↑↓ · →← open/close · ⏎ root · o page · b" : focus === "list" ? "↑↓ · ⏎ open · t tree · / find · b back · q" : "↑↓ link · ⏎ go · J/K␣ scroll · ← list · e edit" : view === "tree" ? "↑↓ move  →/l expand  ←/h collapse  space toggle  enter make root  o open page  x collapse all  b back  q quit" : focus === "list" ? "↑↓ move  enter/→ links  tab focus  space/J/K scroll  t tree  b back  / search  e edit  q quit" : "↑↓ link  enter follow  ←/esc list  space/J/K scroll  t tree  b back  e edit  q quit";
+  const footerText = searching ? null : narrow ? view === "tree" ? "↑↓ · →← open/close · ⏎ root · o page · b" : focus === "list" ? "↑↓ · ⏎→ open · ← close · x/X all · [ ] · t · /" : "↑↓ link · ⏎ go · J/K␣ scroll · ← list · e edit" : view === "tree" ? "↑↓ move  →/l expand  ←/h collapse  space toggle  enter make root  o open page  x collapse all  b back  q quit" : focus === "list" ? "↑↓ move  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next type  tab page  t tree  b back  / search  e edit  q" : "↑↓ link  enter follow  ←/esc list  space/J/K scroll  t tree  b back  e edit  q quit";
   const footer = searching ? /* @__PURE__ */ jsxs(Text, {
     wrap: "truncate",
     children: [
@@ -776,7 +885,7 @@ function App({ layers, initial, onEdit }) {
         dimColor: true,
         children: [
           "  ",
-          ids.length,
+          tree.filter((r) => r.kind === "object" || r.kind === "wanted").length,
           " matches",
           narrow ? "" : " · enter keep · esc clear"
         ]
@@ -896,57 +1005,45 @@ function App({ layers, initial, onEdit }) {
                 dimColor: true,
                 children: filter ? " no matches" : " empty store"
               }) : null,
-              visibleRows.map((row, i) => {
+              visibleRows.map((row2, i) => {
                 const index = listStart + i;
                 const w = leftWidth;
-                if (row.kind === "type") {
+                const isCursor = index === cursor;
+                if (row2.kind === "type" || row2.kind === "wanted-header") {
+                  const name2 = row2.kind === "type" ? row2.name : "wanted";
+                  const extra = row2.kind === "type" && multiLayer && row2.layer === "project" ? " project" : "";
+                  const label2 = `${row2.open ? "▾" : "▸"} ${name2}`;
+                  const count2 = ` ${row2.count}${extra}`;
                   return /* @__PURE__ */ jsxs(Text, {
                     wrap: "truncate",
                     children: [
-                      /* @__PURE__ */ jsxs(Text, {
+                      /* @__PURE__ */ jsx(Text, {
                         bold: true,
-                        color: "magenta",
-                        children: [
-                          "▾ ",
-                          row.name
-                        ]
+                        color: row2.kind === "type" ? "magenta" : "red",
+                        inverse: isCursor && focus === "list",
+                        children: label2
                       }),
-                      /* @__PURE__ */ jsxs(Text, {
+                      /* @__PURE__ */ jsx(Text, {
+                        children: " ".repeat(Math.max(1, w - label2.length - count2.length))
+                      }),
+                      /* @__PURE__ */ jsx(Text, {
                         dimColor: true,
-                        children: [
-                          " (",
-                          row.count,
-                          ")",
-                          multiLayer && row.layer === "project" ? " project" : ""
-                        ]
+                        children: count2
                       })
                     ]
-                  }, `t:${row.name}`);
+                  }, rowKey(row2));
                 }
-                if (row.kind === "wanted-header") {
-                  return /* @__PURE__ */ jsxs(Text, {
-                    bold: true,
-                    color: "red",
-                    wrap: "truncate",
-                    children: [
-                      "▾ wanted (",
-                      row.count,
-                      ")"
-                    ]
-                  }, "wh");
-                }
-                const isCursor = index === cursor;
-                const label = row.kind === "object" ? row.id.slice(row.id.indexOf("/") + 1) : row.id;
+                const label = row2.kind === "object" ? row2.id.slice(row2.id.indexOf("/") + 1) : row2.id;
                 const marks = [];
-                if (row.kind === "object") {
-                  if (changedIds.has(row.id))
+                if (row2.kind === "object") {
+                  if (changedIds.has(row2.id))
                     marks.push({ t: "•", c: "green" });
-                  if (row.obj.pinned)
+                  if (row2.obj.pinned)
                     marks.push({ t: "★", c: "yellow" });
-                  if (store.issuesFor(row.obj.path).some((x) => x.severity === "error"))
+                  if (store.issuesFor(row2.obj.path).some((x) => x.severity === "error"))
                     marks.push({ t: "!", c: "red" });
                 }
-                const count = row.kind === "object" ? store.backlinks.get(row.id)?.size ?? 0 : row.sources;
+                const count = row2.kind === "object" ? store.backlinks.get(row2.id)?.size ?? 0 : row2.sources;
                 const right = count ? ` ←${count}` : "";
                 const marksWidth = marks.length ? marks.length + 1 : 0;
                 const name = truncate(label, w - 3 - right.length - marksWidth);
@@ -960,7 +1057,7 @@ function App({ layers, initial, onEdit }) {
                     /* @__PURE__ */ jsxs(Text, {
                       inverse: isCursor && focus === "list",
                       bold: isCursor,
-                      color: row.kind === "wanted" ? "red" : isCursor ? "cyan" : undefined,
+                      color: row2.kind === "wanted" ? "red" : isCursor ? "cyan" : undefined,
                       children: [
                         " ",
                         name,
@@ -979,7 +1076,7 @@ function App({ layers, initial, onEdit }) {
                       children: right
                     })
                   ]
-                }, `o:${row.id}`);
+                }, `o:${row2.id}`);
               })
             ]
           }),
@@ -1018,7 +1115,7 @@ async function runViewer(layers, initial) {
         editing = path;
         state = s;
       }
-    }), { alternateScreen: true, exitOnCtrlC: true });
+    }), { alternateScreen: true, exitOnCtrlC: true, incrementalRendering: true });
     await app.waitUntilExit();
     if (!editing)
       return;

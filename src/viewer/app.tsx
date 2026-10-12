@@ -2,7 +2,20 @@ import { Box, Text, useApp, useInput, useWindowSize } from "ink";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { displayPath } from "../core/render.ts";
 import { type Layer, Store } from "../core/store.ts";
-import { type Line, linkTree, renderPage, type Row, selectable, treeLine, treeRows, truncate } from "./model.ts";
+import {
+  type Line,
+  linkTree,
+  parentKey,
+  renderPage,
+  renderTypePage,
+  renderWantedPage,
+  rowKey,
+  treeLine,
+  treeRows,
+  truncate,
+  typeKey,
+  WANTED_KEY,
+} from "./model.ts";
 import { watchStores } from "./watch.ts";
 
 export type View = "browse" | "tree";
@@ -13,6 +26,8 @@ export interface ViewerState {
   view: View;
   history: string[];
   filter: string;
+  /** Expanded headers in the browse list (`type:<name>`, `wanted:`); all start collapsed. */
+  open?: string[];
 }
 
 interface Props {
@@ -53,6 +68,7 @@ export function App({ layers, initial, onEdit }: Props) {
   const [scroll, setScroll] = useState(0);
   const [filter, setFilter] = useState(initial.filter);
   const [searching, setSearching] = useState(false);
+  const [open, setOpen] = useState<Set<string>>(() => new Set(initial.open ?? []));
   /** Tree view: expanded node keys and the cursor key; reset when the root changes. */
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [treeCursor, setTreeCursor] = useState<string | undefined>();
@@ -99,21 +115,42 @@ export function App({ layers, initial, onEdit }: Props) {
   const rightWidth = narrow ? Math.max(10, columns - 4) : Math.max(10, columns - leftWidth - 6);
 
   // ── selection ──
-  const tree = useMemo(() => treeRows(store, filter), [store, filter]);
-  const ids = useMemo(() => tree.filter(selectable).map((r) => r.id), [tree]);
-  let cursor = current ? tree.findIndex((r) => selectable(r) && r.id === current) : -1;
-  const exists = (id: string) => store.objects.has(id) || store.wanted.has(id);
-  // In tree view the root may be filtered out of the list; elsewhere fall back to a row.
+  // `current` is a row key: an object or wanted id, `type:<name>` or `wanted:`.
+  const tree = useMemo(() => treeRows(store, filter, open), [store, filter, open]);
+  const keys = useMemo(() => tree.map(rowKey), [tree]);
+  let cursor = current ? keys.indexOf(current) : -1;
+  const exists = (key: string) =>
+    key.startsWith("type:") ? store.types.has(key.slice(5)) : key === WANTED_KEY ? store.wanted.size > 0 : store.objects.has(key) || store.wanted.has(key);
+  // In tree view the root may be hidden in the list; elsewhere fall back to a nearby row.
   const selected = current && exists(current) && (cursor >= 0 || view === "tree") ? current : undefined;
-  if (!selected) {
-    const sel = tree.map((r, i) => [r, i] as const).filter(([r]) => selectable(r));
-    const pick = sel.find(([, i]) => i >= lastIndex.current) ?? sel[sel.length - 1];
-    cursor = pick ? pick[1] : -1;
-  }
-  const id = selected ?? (cursor >= 0 ? (tree[cursor] as Extract<Row, { id: string }>).id : undefined);
+  if (!selected) cursor = keys.length ? clamp(lastIndex.current, 0, keys.length - 1) : -1;
+  const selectedKey = selected ?? (cursor >= 0 ? keys[cursor] : undefined);
+  const row = cursor >= 0 ? tree[cursor] : undefined;
+  const isHeader = (key: string | undefined) => !!key && (key.startsWith("type:") || key === WANTED_KEY);
+  /** The selected object or wanted page (undefined on a header). */
+  const id = isHeader(selectedKey) ? undefined : selectedKey;
   if (cursor >= 0) lastIndex.current = cursor;
 
-  const page = useMemo(() => (id ? renderPage(store, id, rightWidth, changedIds) : undefined), [store, id, rightWidth, changedIds]);
+  // Selecting an object (following a link, going back) opens its group in the list.
+  useEffect(() => {
+    const parent = current ? parentKey(store, current) : undefined;
+    if (parent && !open.has(parent)) setOpen((prev) => new Set(prev).add(parent));
+  }, [current, store]);
+
+  const toggle = (key: string, on: boolean) =>
+    setOpen((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+
+  const page = useMemo(() => {
+    if (!selectedKey) return undefined;
+    if (selectedKey.startsWith("type:")) return renderTypePage(store, selectedKey.slice(5), rightWidth);
+    if (selectedKey === WANTED_KEY) return renderWantedPage(store, rightWidth);
+    return renderPage(store, selectedKey, rightWidth, changedIds);
+  }, [store, selectedKey, rightWidth, changedIds]);
   // The tree is rooted at the current object; the root starts expanded.
   const openKeys = useMemo(() => (id && !expanded.size ? new Set([id]) : expanded), [id, expanded]);
   const nodes = useMemo(() => (id && view === "tree" ? linkTree(store, id, openKeys) : []), [store, id, openKeys, view]);
@@ -121,8 +158,8 @@ export function App({ layers, initial, onEdit }: Props) {
   const node = nodes[nodeIndex];
 
   const go = (target: string, push = true) => {
-    if (target === id) return;
-    if (push && id) setHistory((h) => [...h.slice(-49), id]);
+    if (target === selectedKey) return;
+    if (push && selectedKey) setHistory((h) => [...h.slice(-49), selectedKey]);
     setCurrent(target);
     setLinkIdx(0);
     setScroll(0);
@@ -131,7 +168,7 @@ export function App({ layers, initial, onEdit }: Props) {
     setExpanded(saved?.expanded ?? new Set());
     setTreeCursor(saved?.cursor);
     // Following a link to something hidden by the filter clears the filter.
-    if (filter && !treeRows(store, filter).some((r) => selectable(r) && r.id === target)) setFilter("");
+    if (filter && !treeRows(store, filter).some((r) => rowKey(r) === target)) setFilter("");
   };
   const back = () => {
     const prev = history[history.length - 1];
@@ -140,10 +177,9 @@ export function App({ layers, initial, onEdit }: Props) {
     go(prev, false);
   };
   const moveList = (delta: number) => {
-    if (!ids.length) return;
-    const i = id ? ids.indexOf(id) : -1;
-    const next = ids[clamp(i + delta, 0, ids.length - 1)]!;
-    if (next !== id) {
+    if (!keys.length) return;
+    const next = keys[clamp(cursor + delta, 0, keys.length - 1)]!;
+    if (next !== selectedKey) {
       setCurrent(next);
       setLinkIdx(0);
       setScroll(0);
@@ -157,7 +193,7 @@ export function App({ layers, initial, onEdit }: Props) {
   const edit = () => {
     const obj = id ? store.objects.get(id) : undefined;
     if (!obj) return;
-    onEdit(obj.path, { current: id, view, history, filter });
+    onEdit(obj.path, { current: id, view, history, filter, open: [...open] });
     exit();
   };
 
@@ -194,7 +230,10 @@ export function App({ layers, initial, onEdit }: Props) {
       setFocus("list");
       return;
     }
-    if (input === "t" || input === "g" || input === "2") return setView(view === "tree" && input !== "2" ? "browse" : "tree");
+    if (input === "t" || input === "g" || input === "2") {
+      if (view !== "tree" && !id) return; // the tree starts from an object
+      return setView(view === "tree" && input !== "2" ? "browse" : "tree");
+    }
     if (input === "1") return setView("browse");
     if (input === "e") return edit();
     if (input === "r") return reload();
@@ -233,6 +272,37 @@ export function App({ layers, initial, onEdit }: Props) {
     }
 
     if (key.tab) return setFocus(focus === "list" ? "page" : "list");
+
+    // List headers: expand/collapse types (all start collapsed), jump between them.
+    if (focus === "list" && !filter) {
+      const header = row && (row.kind === "type" || row.kind === "wanted-header") ? row : undefined;
+      const headerKey = header ? rowKey(header) : undefined;
+      if (header && headerKey && (key.return || key.rightArrow || input === "l" || input === " ")) {
+        if (!header.open) return toggle(headerKey, true);
+        if (key.rightArrow || input === "l") return moveList(1);
+        return toggle(headerKey, false);
+      }
+      if (key.leftArrow || input === "h") {
+        if (header && headerKey && header.open) return toggle(headerKey, false);
+        const parent = selectedKey ? parentKey(store, selectedKey) : undefined;
+        if (parent) return setCurrent(parent);
+        return;
+      }
+      if (input === "x") {
+        const parent = selectedKey ? (parentKey(store, selectedKey) ?? selectedKey) : undefined;
+        setOpen(new Set());
+        if (parent) setCurrent(parent);
+        return;
+      }
+      if (input === "X") return setOpen(new Set([...[...store.types.keys()].map(typeKey), WANTED_KEY]));
+      if (input === "[" || input === "]") {
+        const headers = tree.map((r, i) => [r, i] as const).filter(([r]) => r.kind === "type" || r.kind === "wanted-header");
+        const target = input === "]" ? headers.find(([, i]) => i > cursor) : [...headers].reverse().find(([, i]) => i < cursor);
+        if (target) setCurrent(rowKey(target[0]));
+        return;
+      }
+    }
+
     if (key.pageDown || input === " " || (key.ctrl && input === "d")) return setScroll((s) => Math.min(maxScroll, s + innerHeight - 2));
     if (key.pageUp || (key.ctrl && input === "u")) return setScroll((s) => Math.max(0, s - innerHeight + 2));
 
@@ -314,19 +384,19 @@ export function App({ layers, initial, onEdit }: Props) {
       ? view === "tree"
         ? "↑↓ · →← open/close · ⏎ root · o page · b"
         : focus === "list"
-          ? "↑↓ · ⏎ open · t tree · / find · b back · q"
+          ? "↑↓ · ⏎→ open · ← close · x/X all · [ ] · t · /"
           : "↑↓ link · ⏎ go · J/K␣ scroll · ← list · e edit"
       : view === "tree"
         ? "↑↓ move  →/l expand  ←/h collapse  space toggle  enter make root  o open page  x collapse all  b back  q quit"
         : focus === "list"
-          ? "↑↓ move  enter/→ links  tab focus  space/J/K scroll  t tree  b back  / search  e edit  q quit"
+          ? "↑↓ move  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next type  tab page  t tree  b back  / search  e edit  q"
           : "↑↓ link  enter follow  ←/esc list  space/J/K scroll  t tree  b back  e edit  q quit";
   const footer = searching ? (
     <Text wrap="truncate">
       <Text color="yellow">/</Text>
       <Text>{filter}</Text>
       <Text inverse> </Text>
-      <Text dimColor>  {ids.length} matches{narrow ? "" : " · enter keep · esc clear"}</Text>
+      <Text dimColor>  {tree.filter((r) => r.kind === "object" || r.kind === "wanted").length} matches{narrow ? "" : " · enter keep · esc clear"}</Text>
     </Text>
   ) : (
     <Text dimColor wrap="truncate">
@@ -384,18 +454,22 @@ export function App({ layers, initial, onEdit }: Props) {
           {visibleRows.map((row, i) => {
             const index = listStart + i;
             const w = leftWidth;
-            if (row.kind === "type") {
+            const isCursor = index === cursor;
+            if (row.kind === "type" || row.kind === "wanted-header") {
+              const name = row.kind === "type" ? row.name : "wanted";
+              const extra = row.kind === "type" && multiLayer && row.layer === "project" ? " project" : "";
+              const label = `${row.open ? "▾" : "▸"} ${name}`;
+              const count = ` ${row.count}${extra}`;
               return (
-                <Text key={`t:${row.name}`} wrap="truncate">
-                  <Text bold color="magenta">▾ {row.name}</Text>
-                  <Text dimColor> ({row.count}){multiLayer && row.layer === "project" ? " project" : ""}</Text>
+                <Text key={rowKey(row)} wrap="truncate">
+                  <Text bold color={row.kind === "type" ? "magenta" : "red"} inverse={isCursor && focus === "list"}>
+                    {label}
+                  </Text>
+                  <Text>{" ".repeat(Math.max(1, w - label.length - count.length))}</Text>
+                  <Text dimColor>{count}</Text>
                 </Text>
               );
             }
-            if (row.kind === "wanted-header") {
-              return <Text key="wh" bold color="red" wrap="truncate">▾ wanted ({row.count})</Text>;
-            }
-            const isCursor = index === cursor;
             const label = row.kind === "object" ? row.id.slice(row.id.indexOf("/") + 1) : row.id;
             const marks: { t: string; c: string }[] = [];
             if (row.kind === "object") {

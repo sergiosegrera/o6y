@@ -273,7 +273,7 @@ const COMMANDS: Record<string, Command> = {
           `  rules     ${stats.rules}`,
           `  guidance  ${stats.guidance}`,
           `  pinned    ${stats.pinned}  (pinnedBudget ${store.settings.pinnedBudget})`,
-          `  catalog   ${stats.catalog} of promptBudget ${stats.budget} (${pct(stats.catalog)})`,
+          `  catalog   ${stats.catalog}: full lines ${stats.lines} of promptBudget ${stats.budget} (${pct(stats.lines)}), slugs ${stats.names} of namesBudget ${stats.namesBudget}`,
           `objects: ${stats.objects} — ${stats.full} full lines, ${stats.named} by slug, ${stats.hidden} only in index.md`,
           stats.relevant.length ? `relevant to this directory: ${stats.relevant.join(", ")}` : "relevant to this directory: none",
         ].join("\n"),
@@ -670,8 +670,10 @@ const COMMANDS: Record<string, Command> = {
     options: { tree: { type: "boolean" } },
     async run(ctx, [id], o) {
       if (!ctx.isTTY) throw new UsageError("the viewer needs an interactive terminal");
+      // React's development build is much slower; nothing here needs it.
+      process.env.NODE_ENV ??= "production";
       const { runViewer } = await import("../viewer/run.tsx");
-      await runViewer(ctx.layers, { current: id, view: o.tree ? "tree" : "browse", history: [], filter: "" });
+      await runViewer(ctx.layers, { current: id, view: o.tree ? "tree" : "browse", history: [], filter: "", open: [] });
       return 0;
     },
   },

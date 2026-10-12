@@ -37,7 +37,8 @@ Anything else inside a store is rejected.
 ```md
 ---
 summaryMaxLength: 80      # hard cap on every object's `summary`
-promptBudget: 8000        # max characters of the object catalog in the system prompt (rules, guidance, pinned not counted)
+promptBudget: 8000        # max characters of full object lines in the system prompt (rules, guidance, pinned, slug lists not counted)
+namesBudget: 10000        # max characters of the slug lists naming every other object
 pinnedBudget: 2500        # max characters (summary + body) of all pinned objects together
 ---
 Free-form guidance for the whole memory (shown in the system prompt).
@@ -125,18 +126,21 @@ The combined size (summary + body) of all pinned objects is capped by `pinnedBud
 
 ## System prompt
 
-At session start, o6y computes an `<o6y>` section once and injects it into every run, so the prompt cache stays stable. `/o6y` refreshes it. The section holds:
+o6y injects an `<o6y>` section into every run. `/o6y` refreshes it on demand. The section holds:
 - short usage rules that point to the `o6y` skill
 - pinned objects, in full
 - the store paths
 - root guidance
-- every type with its fields, and its objects grouped beneath it, bounded by `promptBudget` (the rules, guidance and pinned objects don't count against it, so pinning never hides the catalog)
+- every type (name, count and description; fields stay in `index.md`) with its objects grouped beneath it. Full lines (`- [[id]] — summary`) are bounded by `promptBudget`, and the rules, guidance, pinned objects and slug lists don't count against it, so pinning never hides the catalog.
 
-Every object is listed at least by slug (`also: a, b, c` under its type). Names-only entries take at most half the budget; if even the names don't fit, the lowest-priority ones are left to the type's `index.md`. Full lines (with index fields and summary) go, in order, to:
-1. objects of `alwaysList` types (the starter `preference` type sets it: for a preference the summary is the instruction)
-2. objects relevant to the working directory: an object with a path field containing the cwd, its git root or (in a worktree) the main checkout, e.g. `location: ~/Projects/north`, or whose slug is that directory's name; then every object linked to or from those
-3. the most recently changed objects, up to 30% of the budget, so new knowledge shows up before anything links to it; objects touched by a bulk change (8 or more changed within 2 minutes, such as a migration) are skipped
-4. the most linked objects
+Every object without a full line is listed by slug (`also: a, b, c` under its type). Slug lists have their own `namesBudget`, about 400 objects at the default; past that, the lowest-priority slugs are left to the type's `index.md`. Full lines go, in order, to:
+1. objects relevant to the working directory: an object with a path field containing the cwd, its git root or (in a worktree) the main checkout, e.g. `location: ~/Projects/north`, or whose slug is that directory's name. Paths are found inside prose too (`~/Projects/north (primary checkout)`).
+2. objects of `alwaysList` types, up to 35% of the budget (the starter `preference` type sets it: for a preference the summary is the instruction)
+3. objects that link to a directory match (backlinks only, since a hub's outgoing links can cover half the store), most linked first, up to 40%
+4. the most recently changed objects, up to 30%, so new knowledge shows up before anything links to it; objects touched by a bulk change (8 or more changed within 2 minutes, such as a migration) are skipped
+5. the most linked objects
+
+The section is computed at session start and rebuilt before a prompt whenever the store has changed (checked with a cheap file fingerprint), so objects written during a session show up in the next turn. Pi appends section changes as a transcript delta, so the cached prompt prefix stays valid.
 
 Pinned objects are listed by name only, since their full content is already above.
 

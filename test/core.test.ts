@@ -235,21 +235,25 @@ describe("rendering and ops", () => {
 
   const catalog = (section: string) => section.slice(section.indexOf("\nMemory:"));
 
-  test("prompt catalog respects budget and lists every object at least by name", () => {
+  const withoutNames = (section: string) => section.split("\n").filter((l) => !l.startsWith("also: ")).join("\n");
+
+  test("full lines respect promptBudget; every object is still listed by slug", () => {
     for (let i = 0; i < 200; i++) put(g, `org/o-${i}.md`, obj(`summary: org number ${i}`));
     put(g, ".schema.md", "---\npromptBudget: 3000\n---\n");
     const section = catalog(renderPromptSection(Store.load(layers)));
-    expect(section.length).toBeLessThanOrEqual(3000);
+    expect(withoutNames(section).length).toBeLessThanOrEqual(3000);
     expect(section.indexOf("[[org/openai]]")).toBeLessThan(section.indexOf("[[org/o-")); // most linked first
     for (let i = 0; i < 200; i++) expect(section).toMatch(new RegExp(`(\\[\\[org/o-${i}\\]\\]|[ ,]o-${i}(,|\\n|$))`));
-    expect(section).toContain("also: ");
+    expect(section).not.toContain("more: read");
+    expect(section).not.toContain("fields:"); // field lines stay in index.md
   });
 
-  test("prompt catalog drops lowest-ranked names when even names don't fit", () => {
+  test("slug lists have their own namesBudget", () => {
     for (let i = 0; i < 400; i++) put(g, `org/organization-number-${i}.md`, obj(`summary: org ${i}`));
-    put(g, ".schema.md", "---\npromptBudget: 2000\n---\n");
+    put(g, ".schema.md", "---\npromptBudget: 2000\nnamesBudget: 1000\n---\n");
     const section = catalog(renderPromptSection(Store.load(layers)));
-    expect(section.length).toBeLessThanOrEqual(2000);
+    const names = section.split("\n").filter((l) => l.startsWith("also: ")).join("\n");
+    expect(names.length).toBeLessThanOrEqual(1000 + 10);
     expect(section).toMatch(/… \d+ more: read/);
   });
 
@@ -291,32 +295,38 @@ describe("rendering and ops", () => {
     expect(renderPromptSection(store)).toContain("[[org/fresh]] — just learned");
   });
 
-  test("alwaysList types get full lines first", () => {
+  test("alwaysList types get full lines, capped so other ranking still counts", () => {
     put(g, "pref/.schema.md", "---\ndescription: A preference\nalwaysList: true\n---\n");
-    for (let i = 0; i < 30; i++) put(g, `pref/p-${i}.md`, obj(`summary: do thing ${i}`));
+    for (let i = 0; i < 60; i++) put(g, `pref/p-${i}.md`, obj(`summary: always do preference thing ${i}`));
     for (let i = 0; i < 200; i++) put(g, `org/o-${i}.md`, obj(`summary: org number ${i}`));
     put(g, ".schema.md", "---\npromptBudget: 3000\n---\n");
     const section = renderPromptSection(Store.load(layers));
-    for (let i = 0; i < 30; i++) expect(section).toContain(`[[pref/p-${i}]] — do thing ${i}`);
+    const prefLines = section.split("\n").filter((l) => l.startsWith("- [[pref/")).length;
+    expect(prefLines).toBeGreaterThan(15);
+    expect(prefLines).toBeLessThan(60); // capped at a share of the budget
+    expect(section).toContain("[[org/openai]] —"); // most-linked still gets room
+    for (let i = 0; i < 60; i++) expect(section).toMatch(new RegExp(`(\\[\\[pref/p-${i}\\]\\]|[ ,]p-${i}(,|\\n|$))`));
     expect(parseTypeSchema("---\ndescription: x\nalwaysList: yes please\n---\n").errors[0]).toContain("alwaysList");
   });
 
-  test("objects relevant to the working directory are boosted with their neighbors", () => {
-    put(g, "org/north.md", obj("summary: North monorepo\nlocation: ~/Projects/north"));
+  test("objects relevant to the working directory: direct matches, then what links to them", () => {
+    put(g, "org/north.md", obj("summary: North monorepo\nlocation: ~/Projects/north (primary checkout) + ~/wt/north-*", "Uses [[org/dotfiles]]."));
     put(g, "org/north-gotcha.md", obj("summary: North needs make bootstrap", "Applies to [[org/north]]."));
     put(g, "org/dotfiles.md", obj("summary: dotfiles", "x"));
     const home = "/home/me";
     const store = Store.load(layers);
     const rel = relevantObjects(store, ["/home/me/Projects/north/api"], home);
-    expect([...rel.direct]).toEqual(["org/north"]);
-    expect([...rel.linked]).toEqual(["org/north-gotcha"]);
+    expect([...rel.direct]).toEqual(["org/north"]); // path found inside prose
+    expect([...rel.linked]).toEqual(["org/north-gotcha"]); // backlinks only: not org/dotfiles
     expect(relevantObjects(store, ["/home/me/src/dotfiles"], home).direct.has("org/dotfiles")).toBe(true); // slug = dir name
     expect(relevantObjects(store, ["/home/me"], home).direct.size).toBe(0);
 
+    put(g, "pref/.schema.md", "---\ndescription: A preference\nalwaysList: true\n---\n");
+    for (let i = 0; i < 60; i++) put(g, `pref/p-${i}.md`, obj(`summary: always do preference thing ${i}`));
     for (let i = 0; i < 300; i++) put(g, `org/o-${i}.md`, obj(`summary: org number ${i}`));
     put(g, ".schema.md", "---\npromptBudget: 2500\n---\n");
     const section = renderPromptSection(Store.load(layers), { workPaths: [join(homedir(), "Projects/north/api")] });
-    expect(section).toContain("[[org/north]] — North monorepo");
+    expect(section).toContain("[[org/north]] — North monorepo"); // beats alwaysList
     expect(section).toContain("[[org/north-gotcha]] — North needs make bootstrap");
     expect(section).toContain("relevant to this directory");
   });
@@ -327,7 +337,7 @@ describe("rendering and ops", () => {
     const store = Store.load(layers);
     expect(store.errors()).toEqual([]);
     expect(renderTypeIndex(store, "person")).toContain("- [[person/ada]] (active · org/openai) — Engineer");
-    expect(renderPromptSection(store)).toContain("- [[person/ada]] (active · org/openai) — Engineer");
+    expect(renderPromptSection(store)).toContain("- [[person/ada]] — Engineer"); // prompt lines leave index fields to index.md
     expect(parseTypeSchema("---\ndescription: x\nfields:\n  a: string\nindex: [b]\n---\n").errors[0]).toContain("not a declared field");
   });
 

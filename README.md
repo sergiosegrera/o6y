@@ -68,7 +68,7 @@ Write commands validate the whole change before touching disk, log it, and take 
 `o6y` (or `o6y view`) in a terminal opens a live viewer of your stores, built with Ink. To use the command outside pi, install it with Bun or npm:
 
 ```bash
-bun add -g github:sergiosegrera/o6y#v0.4.0     # or: npm i -g github:sergiosegrera/o6y#v0.4.0
+bun add -g github:sergiosegrera/o6y#v0.5.0     # or: npm i -g github:sergiosegrera/o6y#v0.5.0
 o6y                                             # viewer; o6y view --tree note/payments-api
 ```
 
