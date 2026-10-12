@@ -1,13 +1,21 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { ensureFormat, FORMAT_VERSION, readFormat } from "../src/core/format.ts";
 import { parseDoc } from "../src/core/frontmatter.ts";
 import { appendLog, bootstrap, diffSnapshot, restoreSnapshot, takeSnapshot } from "../src/core/fsops.ts";
 import { extractBodyLinks, normalizeLinkValue } from "../src/core/links.ts";
 import { lint, query } from "../src/core/ops.ts";
-import { displayPath, renderObjectFooter, renderPromptSection, renderRootIndex, renderTypeIndex } from "../src/core/render.ts";
+import {
+  bulkChanged,
+  displayPath,
+  relevantObjects,
+  renderObjectFooter,
+  renderPromptSection,
+  renderRootIndex,
+  renderTypeIndex,
+} from "../src/core/render.ts";
 import { parseTypeSchema } from "../src/core/schema.ts";
 import { blockingIssues, changeWarnings, classifyPath, type Layer, makeLayers, Store } from "../src/core/store.ts";
 
@@ -225,16 +233,35 @@ describe("rendering and ops", () => {
     expect(renderObjectFooter(store, "org/openai", join(g, "org/openai.md"))).toContain("[[person/ada]] — Engineer");
   });
 
-  test("prompt section respects budget", () => {
+  const catalog = (section: string) => section.slice(section.indexOf("\nMemory:"));
+
+  test("prompt catalog respects budget and lists every object at least by name", () => {
     for (let i = 0; i < 200; i++) put(g, `org/o-${i}.md`, obj(`summary: org number ${i}`));
     put(g, ".schema.md", "---\npromptBudget: 3000\n---\n");
-    const section = renderPromptSection(Store.load(layers));
-    expect(section.length).toBeLessThanOrEqual(3100);
-    expect(section).toMatch(/… \d+ more/);
+    const section = catalog(renderPromptSection(Store.load(layers)));
+    expect(section.length).toBeLessThanOrEqual(3000);
     expect(section.indexOf("[[org/openai]]")).toBeLessThan(section.indexOf("[[org/o-")); // most linked first
+    for (let i = 0; i < 200; i++) expect(section).toMatch(new RegExp(`(\\[\\[org/o-${i}\\]\\]|[ ,]o-${i}(,|\\n|$))`));
+    expect(section).toContain("also: ");
   });
 
-  test("prompt reserves room for recently changed objects", () => {
+  test("prompt catalog drops lowest-ranked names when even names don't fit", () => {
+    for (let i = 0; i < 400; i++) put(g, `org/organization-number-${i}.md`, obj(`summary: org ${i}`));
+    put(g, ".schema.md", "---\npromptBudget: 2000\n---\n");
+    const section = catalog(renderPromptSection(Store.load(layers)));
+    expect(section.length).toBeLessThanOrEqual(2000);
+    expect(section).toMatch(/… \d+ more: read/);
+  });
+
+  test("pinned objects and guidance don't squeeze the catalog", () => {
+    put(g, ".schema.md", `---\npromptBudget: 3000\npinnedBudget: 5000\n---\n${"Guidance. ".repeat(200)}\n`);
+    put(g, "org/rules.md", obj("summary: rules\npinned: true", "x".repeat(4000)));
+    for (let i = 0; i < 20; i++) put(g, `org/o-${i}.md`, obj(`summary: org number ${i}`));
+    const section = renderPromptSection(Store.load(layers));
+    for (let i = 0; i < 20; i++) expect(section).toContain(`[[org/o-${i}]] — org number ${i}`);
+  });
+
+  test("prompt reserves room for recently changed objects, ignoring bulk changes", () => {
     const old = new Date("2020-01-01");
     const links = [];
     for (let i = 0; i < 150; i++) {
@@ -247,8 +274,51 @@ describe("rendering and ops", () => {
     put(g, "org/fresh.md", obj("summary: just learned"));
     put(g, ".schema.md", "---\npromptBudget: 4000\n---\n");
     const section = renderPromptSection(Store.load(layers));
-    expect(section).toContain("[[org/fresh]]");
-    expect(section).toMatch(/showing \d+: most recently changed and most linked/);
+    expect(section).toContain("[[org/fresh]] — just learned");
+    expect(section).toMatch(/Full lines for \d+ \(recently changed, most linked\)/);
+
+    // A bulk change (many objects touched together) doesn't take over the recent share.
+    const bulkTime = new Date(Date.now() - 1000);
+    for (let i = 0; i < 20; i++) {
+      put(g, `org/bulk-${i}.md`, obj(`summary: migrated ${i}`));
+      utimesSync(join(g, `org/bulk-${i}.md`), bulkTime, bulkTime);
+    }
+    const a = new Date(Date.now() - 3_600_000);
+    utimesSync(join(g, "org/fresh.md"), a, a);
+    const store = Store.load(layers);
+    expect(bulkChanged([...store.objects.values()]).has("org/bulk-0")).toBe(true);
+    expect(bulkChanged([...store.objects.values()]).has("org/fresh")).toBe(false);
+    expect(renderPromptSection(store)).toContain("[[org/fresh]] — just learned");
+  });
+
+  test("alwaysList types get full lines first", () => {
+    put(g, "pref/.schema.md", "---\ndescription: A preference\nalwaysList: true\n---\n");
+    for (let i = 0; i < 30; i++) put(g, `pref/p-${i}.md`, obj(`summary: do thing ${i}`));
+    for (let i = 0; i < 200; i++) put(g, `org/o-${i}.md`, obj(`summary: org number ${i}`));
+    put(g, ".schema.md", "---\npromptBudget: 3000\n---\n");
+    const section = renderPromptSection(Store.load(layers));
+    for (let i = 0; i < 30; i++) expect(section).toContain(`[[pref/p-${i}]] — do thing ${i}`);
+    expect(parseTypeSchema("---\ndescription: x\nalwaysList: yes please\n---\n").errors[0]).toContain("alwaysList");
+  });
+
+  test("objects relevant to the working directory are boosted with their neighbors", () => {
+    put(g, "org/north.md", obj("summary: North monorepo\nlocation: ~/Projects/north"));
+    put(g, "org/north-gotcha.md", obj("summary: North needs make bootstrap", "Applies to [[org/north]]."));
+    put(g, "org/dotfiles.md", obj("summary: dotfiles", "x"));
+    const home = "/home/me";
+    const store = Store.load(layers);
+    const rel = relevantObjects(store, ["/home/me/Projects/north/api"], home);
+    expect([...rel.direct]).toEqual(["org/north"]);
+    expect([...rel.linked]).toEqual(["org/north-gotcha"]);
+    expect(relevantObjects(store, ["/home/me/src/dotfiles"], home).direct.has("org/dotfiles")).toBe(true); // slug = dir name
+    expect(relevantObjects(store, ["/home/me"], home).direct.size).toBe(0);
+
+    for (let i = 0; i < 300; i++) put(g, `org/o-${i}.md`, obj(`summary: org number ${i}`));
+    put(g, ".schema.md", "---\npromptBudget: 2500\n---\n");
+    const section = renderPromptSection(Store.load(layers), { workPaths: [join(homedir(), "Projects/north/api")] });
+    expect(section).toContain("[[org/north]] — North monorepo");
+    expect(section).toContain("[[org/north-gotcha]] — North needs make bootstrap");
+    expect(section).toContain("relevant to this directory");
   });
 
   test("schema `index` fields appear next to objects", () => {
@@ -278,6 +348,11 @@ describe("rendering and ops", () => {
     expect(report.text).toContain("[[org/lonely]]");
     put(g, "org/extra.md", obj("summary: x\nfounded: 2015"));
     expect(lint(Store.load(layers)).text).toContain("- [[org/extra]]: founded");
+  });
+
+  test("lint does not report reserved fields as undeclared", () => {
+    put(g, "org/pinned.md", obj("summary: x\npinned: true"));
+    expect(lint(Store.load(layers)).text).not.toContain("[[org/pinned]]: pinned");
   });
 });
 

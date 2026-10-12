@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0
+
+- **The `o6y` command** replaces the `o6y_query` and `o6y_lint` tools, so o6y no longer adds tool schemas to every prompt. The extension puts it on the agent's PATH automatically (it runs on the Node that runs pi). It covers read commands (`query`, `show`, `links`, `backlinks`, `index`, `lint`, `stats`, `log`, `prompt --stats`, `export --format json|mermaid|dot`) and validated write commands (`new`, `set`, `mv` with link rewriting, `merge`, `rm`, `field add|rename|drop`, `type rename`, and `check` for drafts). Write commands validate the whole change before writing, log with the command name, and take `--dry-run`.
+- Eval cases `rename-object` and `merge-duplicates`.
+- `o6y` viewer (`o6y` or `o6y view`): a live Ink terminal UI with a browse view, a link tree you can expand outward from any object, link following, history, search, `$EDITOR` integration and hot reload. It adapts to narrow side panes.
+- The prompt catalog lists every object, at least by slug (`also: …`), so the agent always sees what exists. Full lines go first to `alwaysList` types, then to objects relevant to the working directory (path fields such as `location: ~/Projects/north`, or a slug matching the directory, plus their neighbors), then to recent changes, then to the most linked.
+- `promptBudget` now covers only the object catalog. Rules, guidance and pinned objects no longer squeeze it.
+- New type option `alwaysList: true`. New stores' `preference` type sets it; add it to an existing store's `preference/.schema.md` by hand.
+- Recency ranking skips bulk changes (8 or more objects changed within 2 minutes), so a migration doesn't flood the "recent" share.
+- Pinned objects are listed by name only in the catalog, since their full content is already in the prompt.
+- Fix: lint no longer lists `pinned` as an undeclared field.
+
 ## 0.3.1
 
 - The package entry is now `index.ts`, so pi lists the extension as `sergiosegrera/o6y` (git) or `o6y` (npm) instead of `…:src/extension.ts`.

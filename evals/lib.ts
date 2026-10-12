@@ -116,12 +116,17 @@ export const answerMatches = (patterns: RegExp[], step = -1, label = `answer mat
   },
 });
 
-/** Some step read the object's file (`<type>/<slug>.md`). */
+/** Some step read the object: the `read` tool on `<type>/<slug>.md`, or `o6y show` / `cat` in bash. */
 export const readObject = (id: string, label = `read ${id}`): Check => ({
   label,
   test: ({ runs }) =>
-    runs.some((r) => r.toolCalls.some((c) => c.name === "read" && String(c.args.path ?? "").endsWith(`${id}.md`))) ||
-    "never read",
+    runs.some((r) =>
+      r.toolCalls.some(
+        (c) =>
+          (c.name === "read" && String(c.args.path ?? "").endsWith(`${id}.md`)) ||
+          (c.name === "bash" && (String(c.args.command ?? "").includes(`o6y show ${id}`) || String(c.args.command ?? "").includes(`${id}.md`))),
+      ),
+    ) || "never read",
 });
 
 export const maxToolCalls = (n: number, step = -1, label = `≤${n} tool calls`): Check => ({
@@ -136,6 +141,14 @@ export const typeSchema = (
   predicate: (store: Store) => boolean | string,
   label: string,
 ): Check => ({ label, test: ({ store }) => predicate(store) });
+
+/** Some step ran `o6y <command>` through bash. */
+export const ranCommand = (command: string, label = `ran \`o6y ${command}\``): Check => ({
+  label,
+  test: ({ runs }) =>
+    runs.some((r) => r.toolCalls.some((c) => c.name === "bash" && new RegExp(`\\bo6y ${command}\\b`).test(String(c.args.command ?? "")))) ||
+    "never ran it",
+});
 
 // --- Metrics -------------------------------------------------------------------------------
 

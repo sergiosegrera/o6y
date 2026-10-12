@@ -21,11 +21,14 @@ export interface TypeSchema {
   fields: Record<string, FieldSpec>;
   /** Fields shown next to each object in indexes. */
   index: string[];
+  /** Give every object of this type a full line in the prompt catalog, ahead of other ranking. */
+  alwaysList: boolean;
   guidance: string;
 }
 
 export interface RootSettings {
   summaryMaxLength: number;
+  /** Max characters of the object catalog in the prompt (rules, guidance and pinned objects not counted). */
   promptBudget: number;
   /** Max characters of pinned objects (summary + body), injected in full every session. */
   pinnedBudget: number;
@@ -103,9 +106,11 @@ export function parseTypeSchema(text: string): { schema?: TypeSchema; errors: st
       else index.push(name);
     }
   }
+  const alwaysList = doc.data.alwaysList ?? false;
+  if (typeof alwaysList !== "boolean") errors.push("`alwaysList` must be true or false");
   if (errors.length) return { errors };
   return {
-    schema: { description: (description as string).trim(), fields, index, guidance: doc.body.trim() },
+    schema: { description: (description as string).trim(), fields, index, alwaysList: alwaysList === true, guidance: doc.body.trim() },
     errors,
   };
 }

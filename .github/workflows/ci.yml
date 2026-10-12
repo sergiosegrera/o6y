@@ -11,6 +11,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0 # pinned so the committed dist/ bundle is byte-identical
       - run: bun install --frozen-lockfile
+      - name: dist/ is up to date with src/
+        run: bun run build && git status --porcelain dist && test -z "$(git status --porcelain dist)"
       - run: bun test
       - run: bun run typecheck

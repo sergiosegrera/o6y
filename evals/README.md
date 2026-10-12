@@ -3,7 +3,7 @@
 A small behavioural eval set. Each case drives real pi sessions (headless, isolated from your own extensions, context files and skills) against a fixture store. It then scores the result deterministically from the final store and the transcript, with no LLM judge.
 
 ```bash
-bun run eval                                   # all cases × 1 trial on the default model (~$0.003 on GLM 5.3 Flash)
+bun run eval                                   # all cases × 1 trial on the default model (~$0.01 on GLM 5.3 Flash)
 bun evals/run.ts --repeat 3 --label my-change  # more trials, named result file
 bun evals/run.ts --filter recall               # only matching cases
 bun evals/run.ts --compare evals/results/<baseline>.json   # show deltas vs a previous run
@@ -27,7 +27,7 @@ Each run writes JSON (summary plus per-trial check results) to `evals/results/`,
 | tools | tool calls per trial |
 | tokens / cost / time | per trial, summed over the case's steps |
 
-Models are nondeterministic. One trial is fine for spotting regressions; use `--repeat 3` when comparing a change, and don't trust a difference of a single trial. A full 12-case × 3-trial run costs about $0.01 on GLM 5.3 Flash.
+Models are nondeterministic. One trial is fine for spotting regressions; use `--repeat 3` when comparing a change, and don't trust a difference of a single trial. A full 14-case × 3-trial run costs about $0.03 on GLM 5.3 Flash.
 
 ## Cases
 
@@ -45,6 +45,8 @@ Models are nondeterministic. One trial is fine for spotting regressions; use `--
 | schema-migration | acme | a field rename (`person.role` → `title`, including `index:`) ends valid |
 | new-type | acme | knowledge that fits no type gets a new schema and objects |
 | project-vs-global | acme | repo-specific knowledge lands in the project store |
+| rename-object | acme | an object is renamed and every link follows it (and whether `o6y mv` was used) |
+| merge-duplicates | acme + duplicate | a duplicate is folded in: facts kept, links repointed, duplicate deleted |
 
 ## Adding a case
 
@@ -63,4 +65,4 @@ export default defineCase({
 });
 ```
 
-The available checks are in `lib.ts`: `hasObject`, `noObject`, `objectCount`, `lintClean`, `answerMatches`, `readObject`, `maxToolCalls` and `typeSchema`. Any `{ label, test(ctx) }` works too, where `ctx` contains the loaded `Store` and every run's tool calls and answer.
+The available checks are in `lib.ts`: `hasObject`, `noObject`, `objectCount`, `lintClean`, `answerMatches`, `readObject` (the `read` tool, `o6y show` or `cat`), `maxToolCalls`, `typeSchema` and `ranCommand` (a bash call ran `o6y <command>`). Any `{ label, test(ctx) }` works too, where `ctx` contains the loaded `Store` and every run's tool calls and answer.

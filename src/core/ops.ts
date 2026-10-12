@@ -1,4 +1,5 @@
 import { normalizeLinkValue } from "./links.ts";
+import { RESERVED_FIELDS } from "./schema.ts";
 import { formatIssues, type ObjectEntry, type Store } from "./store.ts";
 
 export interface LintReport {
@@ -27,7 +28,7 @@ export function lint(store: Store): LintReport {
   }
   const undeclared = [...store.objects.values()].flatMap((o) => {
     const fields = store.types.get(o.type)?.schema.fields ?? {};
-    const extra = Object.keys(o.data).filter((k) => k !== "summary" && !(k in fields));
+    const extra = Object.keys(o.data).filter((k) => !RESERVED_FIELDS.includes(k) && !(k in fields));
     return extra.length ? [`- [[${o.id}]]: ${extra.join(", ")}`] : [];
   });
   if (undeclared.length) {
@@ -96,3 +97,47 @@ export function formatQuery(store: Store, results: ObjectEntry[]): string {
     .map((o) => `- [[${o.id}]] — ${o.summary}  (${o.path}; ${store.backlinks.get(o.id)?.size ?? 0} backlinks)`)
     .join("\n");
 }
+
+// ── links ──
+
+export interface Edge {
+  id: string;
+  /** Field names and/or "body". */
+  via: string[];
+  /** Target has no object (a wanted page). */
+  missing: boolean;
+}
+
+export interface Neighbors {
+  out: Edge[];
+  in: Edge[];
+}
+
+function outgoing(obj: ObjectEntry): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  const add = (target: string, via: string) => {
+    if (target === obj.id) return;
+    const list = out.get(target) ?? [];
+    if (!list.includes(via)) list.push(via);
+    out.set(target, list);
+  };
+  for (const l of obj.fieldLinks) add(l.target, l.field);
+  for (const l of obj.bodyLinks) add(l.target, "body");
+  return out;
+}
+
+/** Outgoing and incoming edges of `id`, which may be an object or a wanted page. */
+export function neighbors(store: Store, id: string): Neighbors {
+  const obj = store.objects.get(id);
+  const out: Edge[] = obj
+    ? [...outgoing(obj)].map(([target, via]) => ({ id: target, via, missing: !store.objects.has(target) }))
+    : [];
+  const incoming: Edge[] = [];
+  for (const source of store.objects.values()) {
+    const via = outgoing(source).get(id);
+    if (via) incoming.push({ id: source.id, via, missing: false });
+  }
+  const byId = (a: Edge, b: Edge) => a.id.localeCompare(b.id);
+  return { out: out.sort(byId), in: incoming.sort(byId) };
+}
+

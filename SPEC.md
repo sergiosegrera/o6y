@@ -37,7 +37,7 @@ Anything else inside a store is rejected.
 ```md
 ---
 summaryMaxLength: 80      # hard cap on every object's `summary`
-promptBudget: 8000        # max characters of the memory catalog injected into the system prompt
+promptBudget: 8000        # max characters of the object catalog in the system prompt (rules, guidance, pinned not counted)
 pinnedBudget: 2500        # max characters (summary + body) of all pinned objects together
 ---
 Free-form guidance for the whole memory (shown in the system prompt).
@@ -57,6 +57,7 @@ fields:
   works_at: { type: link, to: org, many: true }
   status:   { type: enum, values: [active, past] }
 index: [status]            # optional, max 3 fields shown next to each object in indexes
+alwaysList: true           # optional: every object of this type gets a full line in the prompt catalog
 ---
 Guidance for writing objects of this type (advisory, never validated).
 ```
@@ -129,9 +130,15 @@ At session start, o6y computes an `<o6y>` section once and injects it into every
 - pinned objects, in full
 - the store paths
 - root guidance
-- every type with its fields, and its objects grouped beneath it, bounded by `promptBudget`
+- every type with its fields, and its objects grouped beneath it, bounded by `promptBudget` (the rules, guidance and pinned objects don't count against it, so pinning never hides the catalog)
 
-Of the object budget, 30% goes to the most recently changed objects, so new knowledge shows up before anything links to it. The rest goes to the most linked objects.
+Every object is listed at least by slug (`also: a, b, c` under its type). Names-only entries take at most half the budget; if even the names don't fit, the lowest-priority ones are left to the type's `index.md`. Full lines (with index fields and summary) go, in order, to:
+1. objects of `alwaysList` types (the starter `preference` type sets it: for a preference the summary is the instruction)
+2. objects relevant to the working directory: an object with a path field containing the cwd, its git root or (in a worktree) the main checkout, e.g. `location: ~/Projects/north`, or whose slug is that directory's name; then every object linked to or from those
+3. the most recently changed objects, up to 30% of the budget, so new knowledge shows up before anything links to it; objects touched by a bulk change (8 or more changed within 2 minutes, such as a migration) are skipped
+4. the most linked objects
+
+Pinned objects are listed by name only, since their full content is already above.
 
 ## Manual (skill)
 
@@ -140,8 +147,8 @@ Of the object budget, 30% goes to the most recently changed objects, so new know
 ## Extras
 
 - `log.md` is appended automatically for every create, update and delete, including schema changes and bash migrations.
-- `/o6y-lint` and the `o6y_lint` tool report invalid objects, warnings, wanted pages, orphans and undeclared fields.
-- The `o6y_query` tool filters objects by type, field values, links and text.
+- `/o6y-lint` and `o6y lint` report invalid objects, warnings, wanted pages, orphans and undeclared fields.
+- o6y registers no tools. The `o6y` command (`src/cli`, bundled to `dist/` so it runs on plain Node) does queries and multi-file maintenance: `query`, `show`, `links`, `backlinks`, `index`, `lint`, `stats`, `log`, `prompt`, `export`, `new`, `set`, `mv`, `merge`, `rm`, `field add|rename|drop`, `type rename`, `check` and `view`. The extension puts `bin/o6y` on the agent's PATH, pointing it at the Node that runs pi and at the stores in use (`O6Y_HOME`, `O6Y_PROJECT`), so nothing has to be installed. Write commands build the full change in memory, validate it against the whole store (the same rules as a write) and only then write, and they log with the command name. When one runs inside a bash call, the bash hook doesn't log those files again.
 - `/o6y` shows store status and refreshes the prompt section.
 - Four minimal starter types are seeded into an empty global store:
   - `person` (role, team; optional `## Review notes`)

@@ -49,7 +49,36 @@ To have something load in every session, set `pinned: true` on its object. The t
 The full manual ships as the `o6y` skill. The agent loads it on demand, or you can force it with `/skill:o6y`.
 
 - Commands: `/o6y` (status, and refreshes the memory in the system prompt), `/o6y-lint`.
-- Tools added for the agent: `o6y_query`, `o6y_lint`. o6y hooks the built-in file tools and doesn't replace them.
+- o6y adds no tools. It hooks the built-in file tools, and gives the agent an `o6y` shell command (on its PATH automatically) for searching memory and for validated multi-file changes:
+
+```bash
+o6y query ledger                      # also --type, --where field=value, --links-to, --json
+o6y lint                              # errors, warnings, wanted pages, orphans
+o6y mv note/ledger note/ledger-service    # rename + rewrite every link
+o6y merge note/dup note/original      # fold a duplicate in
+o6y field rename person role title    # schema + every object, one validated step
+o6y prompt --stats                    # where the system-prompt budget goes
+o6y help                              # everything else: show, links, backlinks, new, set, rm, type rename, check, log, stats, export
+```
+
+Write commands validate the whole change before touching disk, log it, and take `--dry-run`.
+
+## Viewer
+
+`o6y` (or `o6y view`) in a terminal opens a live viewer of your stores, built with Ink. To use the command outside pi, install it with Bun or npm:
+
+```bash
+bun add -g github:sergiosegrera/o6y#v0.4.0     # or: npm i -g github:sergiosegrera/o6y#v0.4.0
+o6y                                             # viewer; o6y view --tree note/payments-api
+```
+
+- **Browse** (`1`): types and objects on the left; the selected page on the right, with its fields, body, links and backlinks.
+- **Tree** (`2` / `t`): explore outward from an object like a file tree. Each node's children are what it links to (`→`), what links to it (`←`) and mutual links (`↔`). `→`/`l` expands, `←`/`h` collapses or goes to the parent, `enter` makes the node the new root, `o` opens its page, and `x` collapses everything. Links back to an object already higher up are marked `↺` and don't expand.
+- **Hot reload**: changes to the store, whether made by the agent or by you, show up immediately. Changed objects are marked `•`, and the header shows the error and warning counts.
+- **Narrow panes** (e.g. a cmux or tmux side pane): below 80 columns, browse shows one pane at a time (`enter` opens the page, `←` goes back to the list); the tree view works at any width.
+- **Keys**: `enter` follows a link, `b` goes back, `/` searches ids, summaries and bodies, `e` opens the object in `$EDITOR`, and `q` quits.
+
+Edits made in `$EDITOR` are not validated, because validation hooks only into the agent's tools. The viewer shows any errors they introduce.
 
 ## Limitations
 
@@ -65,9 +94,11 @@ bun install
 bun test
 bun run typecheck
 pi -e ./src/extension.ts
+bun run o6y help    # the CLI from source (src/cli); bun run view for the viewer
+bun run build       # rebuild dist/ (the bundled CLI) after changing src/; CI checks it's current
 ```
 
-`src/core` is pure TypeScript using `node:fs`, because pi runs extensions on Node. `src/extension.ts` is the pi adapter (hooks only), and `skills/o6y/SKILL.md` is the manual.
+`src/core` is pure TypeScript using `node:fs`, because pi runs extensions on Node. `src/cli` is the `o6y` command, and `dist/` holds its Node bundle, which is committed so git installs work without a build step. `src/extension.ts` is the pi adapter (hooks only), and `skills/o6y/SKILL.md` is the manual.
 
 ## License
 

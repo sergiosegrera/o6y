@@ -1,21 +1,22 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { Type } from "typebox";
 import {
   appendLog,
   bootstrap,
   changesToLog,
+  describe,
   diffSnapshot,
   hasChanges,
   restoreSnapshot,
   type Snapshot,
   takeSnapshot,
 } from "./core/fsops.ts";
+import { workPaths } from "./core/context.ts";
 import { ensureFormat } from "./core/format.ts";
-import { formatQuery, lint, query } from "./core/ops.ts";
+import { lint } from "./core/ops.ts";
 import { renderObjectFooter, renderPromptSection, renderRootIndex, renderTypeIndex } from "./core/render.ts";
 import {
   blockingIssues,
@@ -58,7 +59,23 @@ function sliceLines(text: string, offset: unknown, limit: unknown): string {
   return lines.slice(start, end).join("\n");
 }
 
-const SKILL_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "skills", "o6y", "SKILL.md");
+const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const SKILL_PATH = join(PACKAGE_ROOT, "skills", "o6y", "SKILL.md");
+
+/**
+ * Makes the `o6y` command available to the agent's bash: pi builds the shell environment from its
+ * own, so the launcher in bin/ goes on PATH, pointed at this Node and at the stores in use.
+ */
+function exposeCli(layers: Layer[]): void {
+  const bin = join(PACKAGE_ROOT, "bin");
+  const pathKey = Object.keys(process.env).find((k) => k.toLowerCase() === "path") ?? "PATH";
+  const current = process.env[pathKey] ?? "";
+  if (!current.split(delimiter).includes(bin)) process.env[pathKey] = [bin, current].filter(Boolean).join(delimiter);
+  // Only when pi runs on a plain Node or Bun binary; a compiled pi binary can't run scripts.
+  if (/^(node|bun)(\.exe)?$/i.test(basename(process.execPath))) process.env.O6Y_NODE = process.execPath;
+  process.env.O6Y_HOME = layers[0]!.root;
+  if (layers[1]) process.env.O6Y_PROJECT = layers[1].root;
+}
 
 const SCHEMA_MIGRATION_HINT =
   "\nSchema changes must not invalidate existing objects. Migrate the objects first (extra fields are allowed), or perform the schema change and the migration in a single bash command.";
@@ -81,6 +98,7 @@ export default function o6y(pi: ExtensionAPI) {
 
   let layers: Layer[] = [];
   let promptSection = "";
+  let workDirs: string[] = [];
   const pending = new Map<string, Pending>();
 
   function configure(cwd: string): void {
@@ -93,13 +111,15 @@ export default function o6y(pi: ExtensionAPI) {
       (typeof flagProject === "string" && flagProject) || process.env.O6Y_PROJECT || join(cwd, ".agents", "o6y"),
     );
     layers = makeLayers(resolve(cwd, globalRoot), resolve(cwd, projectRoot));
+    workDirs = workPaths(cwd);
+    exposeCli(layers);
   }
 
   const load = () => Store.load(layers);
 
   function refreshPrompt(): Store {
     const store = load();
-    promptSection = renderPromptSection(store);
+    promptSection = renderPromptSection(store, { workPaths: workDirs });
     return store;
   }
 
@@ -236,56 +256,20 @@ export default function o6y(pi: ExtensionAPI) {
         isError: true,
       };
     }
-    appendLog(layers, changesToLog(changes), "bash");
+    // `o6y` write commands log their own changes (with the command name); don't log those twice.
+    const loggedByCli = (path: string) =>
+      layers.some((layer) => {
+        const logPath = join(layer.root, LOG_FILE);
+        const before = state.snapshot.files.get(logPath)?.toString("utf8") ?? "";
+        const added = readOrNull(logPath)?.slice(before.length) ?? "";
+        return added.includes(` ${describe(layers, path)} (o6y `);
+      });
+    appendLog(layers, changesToLog(changes).filter((c) => !loggedByCli(c.path)), "bash");
     const warnings = changeWarnings(state.before, after, new Set());
     const note = warnings.length ? ` New warnings (not blocking):\n${formatIssues(warnings, layers)}` : "";
     return {
       content: [...event.content, { type: "text", text: `\n[o6y] ${count} store change(s) validated and logged.${note}` }],
     };
-  });
-
-  // --- Extra tools ---
-
-  pi.registerTool({
-    name: "o6y_lint",
-    label: "o6y lint",
-    description:
-      "Health check of the o6y memory store: validation errors, broken typed links, wanted pages (linked but not written), orphan objects.",
-    promptSnippet: "Health-check the o6y memory store",
-    parameters: Type.Object({}),
-    annotations: { readOnlyHint: true },
-    async execute(_id, _params, _signal, _onUpdate, ctx) {
-      if (!layers.length) configure(ctx.cwd);
-      const report = lint(load());
-      return { content: [{ type: "text", text: report.text }], details: { errors: report.errors, warnings: report.warnings } };
-    },
-  });
-
-  pi.registerTool({
-    name: "o6y_query",
-    label: "o6y query",
-    description:
-      "Find objects in the o6y memory store by type, frontmatter field values, links, or text. Returns ids, summaries and paths.",
-    promptSnippet: "Query the o6y memory store by type, field, link or text",
-    parameters: Type.Object({
-      type: Type.Optional(Type.String({ description: "Only objects of this type" })),
-      where: Type.Optional(
-        Type.Record(Type.String(), Type.Union([Type.String(), Type.Number(), Type.Boolean()]), {
-          description: "Field equality filters; list/link fields match if any element equals (links as type/slug)",
-        }),
-      ),
-      linksTo: Type.Optional(Type.String({ description: "Only objects linking to this id (type/slug)" })),
-      linkedFrom: Type.Optional(Type.String({ description: "Only objects this id (type/slug) links to" })),
-      text: Type.Optional(Type.String({ description: "Case-insensitive text in id, summary or body" })),
-      limit: Type.Optional(Type.Number({ description: "Max results (default 50)" })),
-    }),
-    annotations: { readOnlyHint: true },
-    async execute(_id, params, _signal, _onUpdate, ctx) {
-      if (!layers.length) configure(ctx.cwd);
-      const store = load();
-      const results = query(store, params);
-      return { content: [{ type: "text", text: formatQuery(store, results) }], details: { ids: results.map((r) => r.id) } };
-    },
   });
 
   // --- Commands ---

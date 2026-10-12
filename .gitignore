@@ -1,9 +1,8 @@
 # dependencies (bun install)
 node_modules
 
-# output
+# output (dist/ is committed: it's the bundled o6y CLI that git installs run)
 out
-dist
 *.tgz
 
 # code coverage

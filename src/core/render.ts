@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { normalizeLinkValue } from "./links.ts";
 import { describeField } from "./schema.ts";
 import { formatIssues, INDEX_FILE, type ObjectEntry, SCHEMA_FILE, type Store, type TypeEntry } from "./store.ts";
@@ -8,6 +8,8 @@ import { formatIssues, INDEX_FILE, type ObjectEntry, SCHEMA_FILE, type Store, ty
 const ROOT_INDEX_PER_TYPE = 50;
 /** Share of the prompt's object budget reserved for the most recently changed objects. */
 const RECENT_SHARE = 0.3;
+/** Share of the prompt's object budget that names-only entries may take, so full lines always get room. */
+const NAMES_SHARE = 0.5;
 
 /** Shortens paths under the home directory to `~/…`; long absolute paths invite typos. */
 export function displayPath(path: string, home = homedir()): string {
@@ -93,7 +95,7 @@ export function renderRootIndex(store: Store): string {
   const errors = store.errors();
   const warnings = store.issues.filter((i) => i.severity === "warning");
   if (errors.length || warnings.length) {
-    lines.push("", `## Issues: ${errors.length} errors, ${warnings.length} warnings (o6y_lint for details)`);
+    lines.push("", `## Issues: ${errors.length} errors, ${warnings.length} warnings (run o6y lint for details)`);
     if (errors.length) lines.push("", formatIssues(errors.slice(0, 20), store.layers));
   }
   return lines.join("\n") + "\n";
@@ -145,63 +147,214 @@ const RULES = `o6y is your persistent, typed memory: a wiki of markdown files yo
 - Link objects with [[type/slug]]. Links to things that don't exist yet are allowed (reported as warnings / wanted pages).
 - ${INDEX_FILE} files are virtual: <store>/${INDEX_FILE} is the full catalog, <store>/<type>/${INDEX_FILE} lists one type. Reading an object shows its backlinks.
 - Writes are validated; when one is rejected, fix it and retry. Bash changes to a store are validated as a transaction and rolled back if they break it.
+- The \`o6y\` shell command searches and maintains memory: \`o6y query <text>\` (or --type/--where/--links-to), \`o6y lint\`, and validated multi-file changes such as \`o6y mv\` (rename + relink), \`o6y merge\`, \`o6y field rename\`. Prefer it over hand-written sed/perl. \`o6y help\` lists everything.
 - Consult memory before work that touches what it covers (people, preferences, decisions, notes). Summaries are only pointers: read every object relevant to the task (including the people involved) before advising or acting. Record durable knowledge you learn — the tribal knowledge a teammate would need — not task chatter. Update existing objects rather than duplicating them. Project-specific → project store; shared → global store.`;
 
+/** Objects changed within this window of each other, in numbers of at least BULK_MIN, are a bulk change. */
+const BULK_WINDOW_MS = 120_000;
+const BULK_MIN = 8;
+
 /**
- * The <o6y> system prompt section, bounded by `promptBudget` characters. Objects are grouped by
- * type; part of the budget goes to the most recently changed objects so new knowledge shows up
- * even before anything links to it, and the rest to the most linked ones.
+ * Objects touched by a bulk change (a migration, a cleanup), detected as many objects with
+ * modification times close together. They are skipped when ranking by recency so one big
+ * transaction doesn't take over the "recent" share.
  */
-export function renderPromptSection(store: Store): string {
-  const head: string[] = [
-    RULES.replace("{MAX}", String(store.settings.summaryMaxLength)),
-    "",
-    "Stores:",
-    ...store.layers.map((l) => `- ${l.name}: ${displayPath(l.root)}`),
-  ];
+export function bulkChanged(objects: ObjectEntry[]): Set<string> {
+  const sorted = [...objects].sort((a, b) => a.mtimeMs - b.mtimeMs);
+  const bulk = new Set<string>();
+  let lo = 0;
+  for (let hi = 0; hi < sorted.length; hi++) {
+    while (sorted[hi]!.mtimeMs - sorted[lo]!.mtimeMs > BULK_WINDOW_MS) lo++;
+    if (hi - lo + 1 >= BULK_MIN) for (let i = lo; i <= hi; i++) bulk.add(sorted[i]!.id);
+  }
+  return bulk;
+}
+
+function pathValues(value: unknown, out: string[] = []): string[] {
+  if (typeof value === "string") {
+    if (value.startsWith("/") || value.startsWith("~/")) out.push(value);
+  } else if (Array.isArray(value)) {
+    for (const v of value) pathValues(v, out);
+  }
+  return out;
+}
+
+/**
+ * Objects relevant to where the agent is working: an object with a path field containing one of
+ * `workPaths` (e.g. `location: ~/Projects/north` for cwd ~/Projects/north/api), or whose slug is
+ * the directory's name, plus every object linked to or from those.
+ */
+export function relevantObjects(store: Store, workPaths: string[], home = homedir()): { direct: Set<string>; linked: Set<string> } {
+  const direct = new Set<string>();
+  const names = new Set(workPaths.map((p) => basename(p).toLowerCase()));
+  for (const obj of store.objects.values()) {
+    if (names.has(obj.slug)) {
+      direct.add(obj.id);
+      continue;
+    }
+    for (const raw of Object.values(obj.data).flatMap((v) => pathValues(v))) {
+      const p = (raw.startsWith("~/") ? join(home, raw.slice(2)) : raw).replace(/\/+$/, "");
+      if (!p || p === home) continue;
+      if (workPaths.some((w) => w === p || w.startsWith(`${p}/`))) {
+        direct.add(obj.id);
+        break;
+      }
+    }
+  }
+  const linked = new Set<string>();
+  for (const id of direct) {
+    const obj = store.objects.get(id)!;
+    for (const t of [...obj.fieldLinks, ...obj.bodyLinks].map((l) => l.target)) if (store.objects.has(t)) linked.add(t);
+    for (const s of store.backlinks.get(id) ?? []) linked.add(s);
+  }
+  for (const id of direct) linked.delete(id);
+  return { direct, linked };
+}
+
+export interface PromptOptions {
+  /** Absolute directories the agent is working in (cwd, repository root), for relevance ranking. */
+  workPaths?: string[];
+}
+
+/**
+ * The <o6y> system prompt section. Rules, guidance and pinned objects are always included; the
+ * object catalog below them is bounded by `promptBudget` characters. Every object is listed at
+ * least by name; full lines (with summary) go first to `alwaysList` types, then objects relevant
+ * to the working directory, then recently changed objects (bulk changes excluded), then the
+ * most linked.
+ */
+export interface PromptStats {
+  /** Characters of each part of the section. */
+  rules: number;
+  guidance: number;
+  pinned: number;
+  catalog: number;
+  budget: number;
+  objects: number;
+  /** Objects shown with a full line, by slug only, or not at all. */
+  full: number;
+  named: number;
+  hidden: number;
+  /** Objects boosted for the working directory (direct matches, then linked). */
+  relevant: string[];
+}
+
+export function renderPromptSection(store: Store, options: PromptOptions = {}): string {
+  return buildPromptSection(store, options).text;
+}
+
+/** The prompt section plus a breakdown of where its characters and budget went. */
+export function buildPromptSection(store: Store, options: PromptOptions = {}): { text: string; stats: PromptStats } {
+  const rules = RULES.replace("{MAX}", String(store.settings.summaryMaxLength));
+  const head: string[] = [rules, "", "Stores:", ...store.layers.map((l) => `- ${l.name}: ${displayPath(l.root)}`)];
+  const guidanceStart = head.join("\n").length;
   for (const layer of store.layers) {
     const guidance = store.rootGuidance.get(layer.name);
     if (guidance) head.push("", `Guidance (${layer.name}):`, guidance);
   }
+  const pinnedStart = head.join("\n").length;
   const pinned = store.pinnedObjects();
   if (pinned.length) {
     head.push("", "Pinned (always loaded):");
     for (const obj of pinned) head.push("", `### [[${obj.id}]] — ${obj.summary}`, obj.body.trim());
   }
+  const headLength = head.join("\n").length;
+
   const types = sortedTypes(store);
   const headers = new Map(types.map((t) => [t.name, typeHeader(store, t, "##")]));
-  const fixedLength =
-    head.join("\n").length + [...headers.values()].reduce((n, h) => n + h.join("\n").length + 2, 0) + 200;
+  const NAMES_PREFIX = "also: ";
+  const all = [...store.objects.values()];
+  const lineOf = new Map(all.map((o) => [o.id, objectLine(store, o)]));
+  const nameOf = (o: ObjectEntry) => (store.layers.length > 1 && o.layer.name === "project" ? `${o.slug} [project]` : o.slug);
+  const lineCost = (o: ObjectEntry) => lineOf.get(o.id)!.length + 1;
+  const nameCost = (o: ObjectEntry) => nameOf(o).length + 2;
+  const fixed = [...headers.values()].reduce((n, h) => n + h.join("\n").length + 2 + NAMES_PREFIX.length + 60, 0) + 300;
+  const budget = Math.max(0, store.settings.promptBudget - fixed);
 
-  const lineOf = new Map([...store.objects.values()].map((o) => [o.id, objectLine(store, o)]));
-  const available = Math.max(0, store.settings.promptBudget - fixedLength);
-  const chosen = new Set<string>();
-  let used = 0;
-  const take = (obj: ObjectEntry, limit: number): boolean => {
-    if (chosen.has(obj.id)) return true;
-    const cost = lineOf.get(obj.id)!.length + 1;
-    if (used + cost > limit) return false;
-    chosen.add(obj.id);
-    used += cost;
-    return true;
-  };
-  const recent = [...store.objects.values()].sort((a, b) => b.mtimeMs - a.mtimeMs || a.id.localeCompare(b.id));
-  for (const obj of recent) if (!take(obj, available * RECENT_SHARE)) break;
-  for (const obj of rankedObjects(store)) if (!take(obj, available)) break;
+  // Priority order for full lines.
+  const ranked = rankedObjects(store);
+  const { direct, linked } = relevantObjects(store, options.workPaths ?? []);
+  const bulk = bulkChanged(all);
+  const recent = all
+    .filter((o) => !bulk.has(o.id))
+    .sort((a, b) => b.mtimeMs - a.mtimeMs || a.id.localeCompare(b.id));
+  const groups: { objects: ObjectEntry[]; limit: number }[] = [
+    { objects: ranked.filter((o) => store.types.get(o.type)?.schema.alwaysList), limit: budget },
+    { objects: ranked.filter((o) => direct.has(o.id)), limit: budget },
+    { objects: ranked.filter((o) => linked.has(o.id)), limit: budget },
+    { objects: recent, limit: budget * RECENT_SHARE },
+    { objects: ranked, limit: budget },
+  ];
+
+  // Full lines first, in priority order, while leaving room to name the rest (up to NAMES_SHARE
+  // of the budget); then names for the rest in the same order, in whatever budget remains.
+  const full = new Set<string>();
+  let fullCost = 0;
+  let restNames = all.reduce((n, o) => n + nameCost(o), 0);
+  const order: ObjectEntry[] = [];
+  const ordered = new Set<string>();
+  for (const group of groups) {
+    let spent = 0;
+    for (const obj of group.objects) {
+      if (full.has(obj.id)) continue;
+      if (!ordered.has(obj.id)) {
+        ordered.add(obj.id);
+        order.push(obj);
+      }
+      if (obj.pinned) continue; // already in full above; listed by name only
+      const cost = lineCost(obj);
+      const names = restNames - nameCost(obj);
+      if (fullCost + cost + Math.min(names, budget * NAMES_SHARE) > budget || spent + cost > group.limit) continue;
+      full.add(obj.id);
+      fullCost += cost;
+      restNames = names;
+      spent += cost;
+    }
+  }
+  const named = new Set<string>();
+  let used = fullCost;
+  for (const obj of order) {
+    if (full.has(obj.id) || used + nameCost(obj) > budget) continue;
+    named.add(obj.id);
+    used += nameCost(obj);
+  }
 
   const body: string[] = [];
   for (const type of types) {
     const objects = store
       .objectsOfType(type.name)
       .sort((a, b) => inbound(store, b) - inbound(store, a) || b.mtimeMs - a.mtimeMs || a.id.localeCompare(b.id));
-    const shown = objects.filter((o) => chosen.has(o.id));
-    body.push("", ...headers.get(type.name)!, ...shown.map((o) => lineOf.get(o.id)!));
-    if (shown.length < objects.length) {
-      body.push(`… ${objects.length - shown.length} more: read ${displayPath(join(type.layer.root, type.name, INDEX_FILE))}`);
-    }
+    body.push("", ...headers.get(type.name)!);
+    body.push(...objects.filter((o) => full.has(o.id)).map((o) => lineOf.get(o.id)!));
+    const names = objects.filter((o) => named.has(o.id)).sort((a, b) => a.slug.localeCompare(b.slug));
+    if (names.length) body.push(`${NAMES_PREFIX}${names.map(nameOf).join(", ")}`);
+    const hidden = objects.length - names.length - objects.filter((o) => full.has(o.id)).length;
+    if (hidden > 0) body.push(`… ${hidden} more: read ${displayPath(join(type.layer.root, type.name, INDEX_FILE))}`);
   }
-  const summary = `\nMemory: ${store.objects.size} objects in ${store.types.size} types${
-    chosen.size < store.objects.size ? ` (showing ${chosen.size}: most recently changed and most linked)` : ""
-  }.`;
-  return [...head, summary, ...body].join("\n");
+  const reasons = [
+    types.some((t) => t.schema.alwaysList) && "always-listed types",
+    direct.size && "relevant to this directory",
+    "recently changed",
+    "most linked",
+  ].filter(Boolean);
+  const summary =
+    full.size < store.objects.size
+      ? `\nMemory: ${store.objects.size} objects in ${store.types.size} types. Full lines for ${full.size} (${reasons.join(", ")}); the rest by slug under "${NAMES_PREFIX.trim()}" — the file is <store>/<type>/<slug>.md.`
+      : `\nMemory: ${store.objects.size} objects in ${store.types.size} types.`;
+  const catalog = [summary, ...body].join("\n");
+  return {
+    text: `${head.join("\n")}\n${catalog}`,
+    stats: {
+      rules: rules.length,
+      guidance: pinnedStart - guidanceStart,
+      pinned: headLength - pinnedStart,
+      catalog: catalog.length,
+      budget: store.settings.promptBudget,
+      objects: store.objects.size,
+      full: full.size,
+      named: named.size,
+      hidden: store.objects.size - full.size - named.size,
+      relevant: [...direct, ...linked],
+    },
+  };
 }

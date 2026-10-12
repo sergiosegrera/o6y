@@ -100,7 +100,8 @@ export function restoreSnapshot(snapshot: Snapshot, layers: Layer[]): void {
 
 export type LogAction = "create" | "update" | "delete";
 
-function describe(layers: Layer[], path: string): string {
+/** How a path is named in log.md: an object id, `schema <type>`, `root schema`, or a relative path. */
+export function describe(layers: Layer[], path: string): string {
   const info = classifyPath(layers, path);
   if (!info) return path;
   switch (info.kind) {
@@ -167,6 +168,7 @@ description: How the user or team wants things done (style, tools, workflow, com
 fields:
   scope: { type: string, description: "who it applies to: user, team, or a project/repo name" }
 index: [scope]
+alwaysList: true
 ---
 Write the preference as an instruction you can follow, plus the reason if known. One preference
 per object; when it changes, update the object instead of adding a contradicting one.

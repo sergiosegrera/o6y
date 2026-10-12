@@ -37,6 +37,7 @@ fields:
   tags: list
   launched: { type: date, required: true, description: first prod deploy }
 index: [owner, language]                         # optional, max 3: shown next to objects in indexes
+alwaysList: true                                 # optional: always give every object a full line in the prompt
 ---
 Writing guidance for objects of this type (free markdown). It is advisory and never validated,
 and it is shown in the type's index.md.
@@ -55,12 +56,16 @@ and it is shown in the type's index.md.
 Field options: `required`, `description`, plus `values` for enums and `to` / `many` for links.
 `summary` and `pinned` are reserved and implicit in every type, so don't declare them.
 
+Use `alwaysList: true` for types whose summaries should always be in front of you (the starter `preference` type has it). Keep such types small.
+
+Objects with a path field (e.g. `location: ~/Projects/north`) are ranked first in the prompt when you work inside that path, along with everything they link to or from. A `location` field on repo or system objects is therefore worth having.
+
 ## Root schema: `<store>/.schema.md`
 
 ```md
 ---
 summaryMaxLength: 80   # max chars of every object's summary
-promptBudget: 8000     # max chars of the memory catalog injected into the system prompt
+promptBudget: 8000     # max chars of the object catalog in the system prompt (rules, guidance, pinned excluded)
 pinnedBudget: 2500     # max chars (summary + body) of all pinned objects combined
 ---
 Guidance for the whole store (shown in the system prompt).
@@ -91,7 +96,7 @@ hard rules, critical contacts, standing instructions.
 
 All pinned objects together must fit in `pinnedBudget`. A write that would exceed it is rejected
 and lists what's pinned, so unpin something or tighten it. Find pinned objects with
-`o6y_query` using `where: { pinned: true }`. The root schema's body is also loaded every session; use
+`o6y query --where pinned=true`; pin or unpin with `o6y set <id> pinned=true` (or `--unset pinned`). The root schema's body is also loaded every session; use
 it for store-wide guidance, and pinned objects for specific facts.
 
 ## Links: what's an error and what's a warning
@@ -125,44 +130,42 @@ Warnings never block a write. They are appended to the tool result, so resolve t
 
 ## Recipes
 
-**Write to a type.** Read its `<type>/.schema.md` first (fields, guidance, `index:`). Keep summaries well under the cap: a rejected write costs a retry.
+**Write to a type.** Read its `<type>/.schema.md` first (fields, guidance, `index:`). Keep summaries well under the cap: a rejected write costs a retry. `o6y check <id> < draft.md` validates a draft without writing it.
 
 **Add a type.** Write `<type>/.schema.md` with a `description`, then write its objects.
 
-**Add an optional field.** Edit the schema. Existing objects stay valid.
+**Change a type's fields** with `o6y field`. It edits the schema and migrates every object in one validated step:
+- `o6y field add system launched date --required --default 2024-01-01`. `--default` fills objects that don't have the field. Other options: `--values a,b` (enum), `--to team` / `--many` (link), `--description`.
+- `o6y field rename person role title`. This also updates `index:`.
+- `o6y field drop system legacy-id`. Use `--keep-values` to drop it from the schema only.
 
-**Add a required field, or tighten a field.** Either:
-1. update the objects first (extra fields are allowed), then edit the schema; or
-2. do both in **one** bash command so the change is validated as a single transaction:
+**Rename or move an object:** `o6y mv system/old-name system/new-name` rewrites every link to it, in bodies (keeping `|label` and `#heading`) and in typed fields. Add `--in project` to move it into the project store.
 
-```bash
-python3 - <<'PY'
-import pathlib
-d = pathlib.Path("<store>/system")
-for f in d.glob("*.md"):                      # objects first…
-    if f.name.startswith("."): continue      # (pathlib's glob also matches .schema.md)
-    s = f.read_text()
-    f.write_text(s.replace("---\n", "---\nlaunched: 2024-01-01\n", 1))
-schema = d / ".schema.md"                     # …then the schema, in the same command
-s = schema.read_text()
-schema.write_text(s.replace("fields:\n", "fields:\n  launched: { type: date, required: true }\n", 1))
-PY
-```
+**Merge duplicates:** `o6y merge note/dup note/original`. The original keeps its own fields and gains the ones it lacked, the duplicate's body is appended under `## Merged from …`, links are repointed and the duplicate is deleted. Then tidy the merged body.
 
-**Rename a field.** Add the new field as optional, copy the values over, remove the old field from the objects, then drop it from the schema. Or do it all in one bash command.
+**Rename a type:** `o6y type rename gotcha pitfall` moves the folder and rewrites ids in links and in other schemas' `to:`.
 
-**Rename an object.** In one bash command, `mv` the file and rewrite its links:
-`mv <store>/system/old-name.md <store>/system/new-name.md && grep -rl 'system/old-name' <store> | xargs perl -pi -e 's#system/old-name\b#system/new-name#g'`
-(`perl -pi` behaves the same on macOS and Linux, unlike `sed -i`.)
+**Anything else** (an unusual migration): do it in **one** bash command, so the store is validated once at the end and rolled back if the result is invalid.
 
-**Merge duplicates.** Fold the content into one object, repoint the links (as above), then delete the other.
+## The `o6y` command
 
-## Tools and commands
+Run it with bash. Every write command validates the whole change before writing anything, logs it, and accepts `--dry-run` to preview.
 
-- `o6y_query`: filter objects by `type`, `where` (field equality; list and link fields match any
-  element), `linksTo`, `linkedFrom` or `text`.
-- `o6y_lint`: errors, warnings, wanted pages, orphans and undeclared fields. Run it after bulk changes.
-- `/o6y` (user command): shows status and refreshes the memory section in the system prompt, which is otherwise computed once per session.
+| Command | Does |
+|---|---|
+| `o6y query [text] [--type T] [--where f=v]… [--links-to ID] [--linked-from ID] [--json]` | find objects (list and link fields match any element) |
+| `o6y show <id>` · `o6y links <id>` · `o6y backlinks <id>` | an object with backlinks; outgoing or incoming links with the field they use |
+| `o6y index [type]` | the generated catalog |
+| `o6y lint` | errors, warnings, wanted pages, orphans, undeclared fields (exit 1 on errors). Run after bulk changes |
+| `o6y stats` · `o6y log [--since 2d]` | counts and budgets; recent changes |
+| `o6y prompt [--stats]` | the memory section of your system prompt, or where its budget goes |
+| `o6y export [--format json\|mermaid\|dot]` | dump the store or its link graph |
+| `o6y new <id> --summary S [--set f=v]… [--body B] [--in project]` | create an object |
+| `o6y set <id> f=v… [--unset f]` | set fields (values are YAML: `true`, `3`, `[a, b]`) |
+| `o6y mv` · `o6y merge` · `o6y rm` · `o6y field` · `o6y type rename` | see Recipes |
+| `o6y check <id\|path> [--file F]` | validate a draft (stdin or file) without writing it |
+
+`o6y help <command>` shows a command's options. `/o6y` (a user command in pi) shows status and refreshes the memory section of the system prompt, which is otherwise computed once per session.
 
 ## What to record
 
