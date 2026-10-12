@@ -4,7 +4,7 @@ import {
   displayPath,
   neighbors,
   storeSignature
-} from "./chunk-e8x3gbg1.js";
+} from "./chunk-wsmnhfrh.js";
 
 // src/viewer/run.tsx
 import { spawnSync } from "node:child_process";
@@ -551,6 +551,15 @@ function App({ layers, initial, onEdit }) {
       setScroll(line - innerHeight + 1);
   };
   const maxScroll = Math.max(0, (page?.lines.length ?? 0) - innerHeight);
+  const onScreen = (line) => line >= scroll && line < scroll + innerHeight;
+  const activeLink = (() => {
+    if (!page?.links.length)
+      return;
+    if (page.linkLines[linkIdx] !== undefined && onScreen(page.linkLines[linkIdx]))
+      return linkIdx;
+    const first = page.linkLines.findIndex(onScreen);
+    return first >= 0 ? first : undefined;
+  })();
   const edit = () => {
     const obj = id ? store.objects.get(id) : undefined;
     if (!obj)
@@ -703,34 +712,26 @@ function App({ layers, initial, onEdit }) {
         setScroll((s) => Math.min(maxScroll, s + 1));
       else if (input === "K")
         setScroll((s) => Math.max(0, s - 1));
-      else if (key.return || key.rightArrow || input === "l") {
-        if (narrow)
-          setFocus("page");
-        else if (page?.links.length) {
-          setFocus("page");
-          ensureVisible(page.linkLines[linkIdx] ?? 0);
-        }
-      } else if (key.escape && filter)
+      else if (key.return || key.rightArrow || input === "l")
+        setFocus("page");
+      else if (key.escape && filter)
         setFilter("");
       return;
     }
     const n = page?.links.length ?? 0;
     if (key.escape || key.leftArrow || input === "h")
       setFocus("list");
-    else if (input === "J" || (key.downArrow || input === "j") && !n)
+    else if (key.downArrow || input === "j" || input === "J")
       setScroll((s) => Math.min(maxScroll, s + 1));
-    else if (input === "K" || (key.upArrow || input === "k") && !n)
+    else if (key.upArrow || input === "k" || input === "K")
       setScroll((s) => Math.max(0, s - 1));
-    else if ((key.downArrow || input === "j") && n) {
-      const i = (linkIdx + 1) % n;
+    else if ((input === "n" || input === "N") && n) {
+      const from = activeLink ?? (input === "n" ? -1 : 0);
+      const i = (from + (input === "n" ? 1 : -1) + n) % n;
       setLinkIdx(i);
       ensureVisible(page.linkLines[i]);
-    } else if ((key.upArrow || input === "k") && n) {
-      const i = (linkIdx - 1 + n) % n;
-      setLinkIdx(i);
-      ensureVisible(page.linkLines[i]);
-    } else if (key.return && n)
-      go(page.links[linkIdx]);
+    } else if (key.return && activeLink !== undefined)
+      go(page.links[activeLink]);
   });
   const errors = store.errors().length;
   const warnings = store.issues.filter((i) => i.severity === "warning").length;
@@ -866,7 +867,7 @@ function App({ layers, initial, onEdit }) {
       })
     ]
   });
-  const footerText = searching ? null : narrow ? view === "tree" ? "↑↓ · →← open/close · ⏎ root · o page · b" : focus === "list" ? "↑↓ · ⏎→ open · ← close · x/X all · [ ] · t · /" : "↑↓ link · ⏎ go · J/K␣ scroll · ← list · e edit" : view === "tree" ? "↑↓ move  →/l expand  ←/h collapse  space toggle  enter make root  o open page  x collapse all  b back  q quit" : focus === "list" ? "↑↓ move  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next type  tab page  t tree  b back  / search  e edit  q" : "↑↓ link  enter follow  ←/esc list  space/J/K scroll  t tree  b back  e edit  q quit";
+  const footerText = searching ? null : narrow ? view === "tree" ? "↑↓ · →← open/close · ⏎ root · o page · b" : focus === "list" ? "↑↓ · ⏎→ open · ← close · x/X all · [ ] · t · /" : "↑↓␣ scroll · n/N link · ⏎ go · ← list · e" : view === "tree" ? "↑↓ move  →/l expand  ←/h collapse  space toggle  enter make root  o open page  x collapse all  b back  q quit" : focus === "list" ? "↑↓ move  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next type  tab page  t tree  b back  / search  e edit  q" : "↑↓/j/k/space scroll  n/N next/prev link  enter follow  ←/esc list  t tree  b back  e edit  q quit";
   const footer = searching ? /* @__PURE__ */ jsxs(Text, {
     wrap: "truncate",
     children: [
@@ -983,7 +984,7 @@ function App({ layers, initial, onEdit }) {
   const visibleRows = tree.slice(listStart, listStart + innerHeight);
   const multiLayer = layers.length > 1;
   const visibleLines = page?.lines.slice(scroll, scroll + innerHeight) ?? [];
-  const activeLinkLine = focus === "page" && page?.links.length ? page.linkLines[linkIdx] : undefined;
+  const activeLinkLine = focus === "page" && activeLink !== undefined ? page.linkLines[activeLink] : undefined;
   return /* @__PURE__ */ jsxs(Box, {
     flexDirection: "column",
     width: columns,

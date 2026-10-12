@@ -158,10 +158,13 @@ function parseTypeSchema(text) {
   const alwaysList = doc.data.alwaysList ?? false;
   if (typeof alwaysList !== "boolean")
     errors.push("`alwaysList` must be true or false");
+  const priority = doc.data.priority ?? 0;
+  if (typeof priority !== "number" || !Number.isInteger(priority))
+    errors.push("`priority` must be an integer (higher ranks first; default 0)");
   if (errors.length)
     return { errors };
   return {
-    schema: { description: description.trim(), fields, index, alwaysList: alwaysList === true, guidance: doc.body.trim() },
+    schema: { description: description.trim(), fields, index, alwaysList: alwaysList === true, priority, guidance: doc.body.trim() },
     errors
   };
 }
@@ -754,6 +757,7 @@ import { homedir } from "node:os";
 import { basename as basename2, join as join2 } from "node:path";
 var ROOT_INDEX_PER_TYPE = 50;
 var RECENT_SHARE = 0.3;
+var LOCAL_RECENT_SHARE = 0.1;
 var ALWAYS_SHARE = 0.35;
 var NEIGHBOR_SHARE = 0.4;
 function displayPath(path, home = homedir()) {
@@ -909,8 +913,10 @@ function bulkChanged(objects) {
 var PATH_TOKEN = /(?:^|[\s(,;])((?:~\/|\/)[^\s,;()]+)/g;
 function pathValues(value, out = []) {
   if (typeof value === "string") {
-    for (const m of value.matchAll(PATH_TOKEN))
-      out.push(m[1]);
+    const trimmed = value.trim();
+    if (trimmed.startsWith("/") || trimmed.startsWith("~/"))
+      for (const m of trimmed.matchAll(PATH_TOKEN))
+        out.push(m[1]);
   } else if (Array.isArray(value)) {
     for (const v of value)
       pathValues(v, out);
@@ -925,7 +931,8 @@ function relevantObjects(store, workPaths, home = homedir()) {
       direct.add(obj.id);
       continue;
     }
-    for (const raw of Object.values(obj.data).flatMap((v) => pathValues(v))) {
+    const values = Object.entries(obj.data).filter(([field]) => field !== "summary").map(([, v]) => v);
+    for (const raw of values.flatMap((v) => pathValues(v))) {
       const p = (raw.startsWith("~/") ? join2(home, raw.slice(2)) : raw).replace(/\/+$/, "");
       if (!p || p === home)
         continue;
@@ -981,11 +988,15 @@ function buildPromptSection(store, options = {}) {
   const { direct, linked } = relevantObjects(store, options.workPaths ?? []);
   const bulk = bulkChanged(all);
   const recent = all.filter((o) => !bulk.has(o.id)).sort((a, b) => b.mtimeMs - a.mtimeMs || a.id.localeCompare(b.id));
+  const priority = (o) => store.types.get(o.type)?.schema.priority ?? 0;
+  const relevant = [...linked].map((id) => store.objects.get(id)).sort((a, b) => priority(b) - priority(a) || inbound(store, b) - inbound(store, a) || b.mtimeMs - a.mtimeMs || a.id.localeCompare(b.id));
+  const local = direct.size > 0;
   const groups = [
     { objects: ranked.filter((o) => direct.has(o.id)), limit: budget },
     { objects: ranked.filter((o) => store.types.get(o.type)?.schema.alwaysList), limit: budget * ALWAYS_SHARE },
-    { objects: ranked.filter((o) => linked.has(o.id)), limit: budget * NEIGHBOR_SHARE },
-    { objects: recent, limit: budget * RECENT_SHARE },
+    { objects: relevant, limit: budget * NEIGHBOR_SHARE },
+    { objects: recent, limit: budget * (local ? LOCAL_RECENT_SHARE : RECENT_SHARE) },
+    { objects: relevant, limit: budget },
     { objects: ranked, limit: budget }
   ];
   const full = new Set;

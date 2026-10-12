@@ -68,7 +68,7 @@ Write commands validate the whole change before touching disk, log it, and take 
 `o6y` (or `o6y view`) in a terminal opens a live viewer of your stores, built with Ink. To use the command outside pi, install it with Bun or npm:
 
 ```bash
-bun add -g github:sergiosegrera/o6y#v0.5.0     # or: npm i -g github:sergiosegrera/o6y#v0.5.0
+bun add -g github:sergiosegrera/o6y#v0.6.0     # or: npm i -g github:sergiosegrera/o6y#v0.6.0
 o6y                                             # viewer; o6y view --tree note/payments-api
 ```
 
@@ -76,7 +76,7 @@ o6y                                             # viewer; o6y view --tree note/p
 - **Tree** (`2` / `t`): explore outward from an object like a file tree. Each node's children are what it links to (`→`), what links to it (`←`) and mutual links (`↔`). `→`/`l` expands, `←`/`h` collapses or goes to the parent, `enter` makes the node the new root, `o` opens its page, and `x` collapses everything. Links back to an object already higher up are marked `↺` and don't expand.
 - **Hot reload**: changes to the store, whether made by the agent or by you, show up immediately. Changed objects are marked `•`, and the header shows the error and warning counts.
 - **Narrow panes** (e.g. a cmux or tmux side pane): below 80 columns, browse shows one pane at a time (`enter` opens the page, `←` goes back to the list); the tree view works at any width.
-- **Keys**: `enter` follows a link, `b` goes back, `/` searches ids, summaries and bodies, `e` opens the object in `$EDITOR`, and `q` quits.
+- **Keys**: on a page, `j`/`k` scroll and `n`/`N` pick a link; `enter` follows a link, `b` goes back, `/` searches ids, summaries and bodies, `e` opens the object in `$EDITOR`, and `q` quits.
 
 Edits made in `$EDITOR` are not validated, because validation hooks only into the agent's tools. The viewer shows any errors they introduce.
 

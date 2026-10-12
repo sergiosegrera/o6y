@@ -59,6 +59,7 @@ fields:
   status:   { type: enum, values: [active, past] }
 index: [status]            # optional, max 3 fields shown next to each object in indexes
 alwaysList: true           # optional: every object of this type gets a full line in the prompt catalog
+priority: 1                # optional integer: rank among objects relevant to the working directory (higher first, default 0)
 ---
 Guidance for writing objects of this type (advisory, never validated).
 ```
@@ -134,11 +135,12 @@ o6y injects an `<o6y>` section into every run. `/o6y` refreshes it on demand. Th
 - every type (name, count and description; fields stay in `index.md`) with its objects grouped beneath it. Full lines (`- [[id]] — summary`) are bounded by `promptBudget`, and the rules, guidance, pinned objects and slug lists don't count against it, so pinning never hides the catalog.
 
 Every object without a full line is listed by slug (`also: a, b, c` under its type). Slug lists have their own `namesBudget`, about 400 objects at the default; past that, the lowest-priority slugs are left to the type's `index.md`. Full lines go, in order, to:
-1. objects relevant to the working directory: an object with a path field containing the cwd, its git root or (in a worktree) the main checkout, e.g. `location: ~/Projects/north`, or whose slug is that directory's name. Paths are found inside prose too (`~/Projects/north (primary checkout)`).
+1. objects relevant to the working directory: an object with a path field containing the cwd, its git root or (in a worktree) the main checkout, e.g. `location: ~/Projects/north`, or whose slug is that directory's name. A field value counts only if it starts with a path, and the paths in it are all read (`~/Projects/north (primary checkout) + ~/wt/north`). `summary` is never read for paths.
 2. objects of `alwaysList` types, up to 35% of the budget (the starter `preference` type sets it: for a preference the summary is the instruction)
-3. objects that link to a directory match (backlinks only, since a hub's outgoing links can cover half the store), most linked first, up to 40%
-4. the most recently changed objects, up to 30%, so new knowledge shows up before anything links to it; objects touched by a bulk change (8 or more changed within 2 minutes, such as a migration) are skipped
-5. the most linked objects
+3. objects that link to a directory match (backlinks only, since a hub's outgoing links can cover half the store), ranked by type `priority`, then links, then recency, up to 40%
+4. the most recently changed objects, up to 30%, or 10% when the directory has relevant objects, so new knowledge shows up before anything links to it; objects touched by a bulk change (8 or more changed within 2 minutes, such as a migration) are skipped
+5. when the directory has relevant objects, the rest of them, before anything generic
+6. the most linked objects
 
 The section is computed at session start and rebuilt before a prompt whenever the store has changed (checked with a cheap file fingerprint), so objects written during a session show up in the next turn. Pi appends section changes as a transcript delta, so the cached prompt prefix stays valid.
 

@@ -23,6 +23,8 @@ export interface TypeSchema {
   index: string[];
   /** Give every object of this type a full line in the prompt catalog, ahead of other ranking. */
   alwaysList: boolean;
+  /** Rank among objects relevant to the working directory: higher first (default 0). */
+  priority: number;
   guidance: string;
 }
 
@@ -111,9 +113,11 @@ export function parseTypeSchema(text: string): { schema?: TypeSchema; errors: st
   }
   const alwaysList = doc.data.alwaysList ?? false;
   if (typeof alwaysList !== "boolean") errors.push("`alwaysList` must be true or false");
+  const priority = doc.data.priority ?? 0;
+  if (typeof priority !== "number" || !Number.isInteger(priority)) errors.push("`priority` must be an integer (higher ranks first; default 0)");
   if (errors.length) return { errors };
   return {
-    schema: { description: (description as string).trim(), fields, index, alwaysList: alwaysList === true, guidance: doc.body.trim() },
+    schema: { description: (description as string).trim(), fields, index, alwaysList: alwaysList === true, priority: priority as number, guidance: doc.body.trim() },
     errors,
   };
 }

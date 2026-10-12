@@ -190,6 +190,14 @@ export function App({ layers, initial, onEdit }: Props) {
     else if (line >= scroll + innerHeight) setScroll(line - innerHeight + 1);
   };
   const maxScroll = Math.max(0, (page?.lines.length ?? 0) - innerHeight);
+  const onScreen = (line: number) => line >= scroll && line < scroll + innerHeight;
+  /** The link enter follows in page focus: the chosen one while visible, else the first visible. */
+  const activeLink = (() => {
+    if (!page?.links.length) return undefined;
+    if (page.linkLines[linkIdx] !== undefined && onScreen(page.linkLines[linkIdx]!)) return linkIdx;
+    const first = page.linkLines.findIndex(onScreen);
+    return first >= 0 ? first : undefined;
+  })();
   const edit = () => {
     const obj = id ? store.objects.get(id) : undefined;
     if (!obj) return;
@@ -311,30 +319,23 @@ export function App({ layers, initial, onEdit }: Props) {
       else if (key.upArrow || input === "k") moveList(-1);
       else if (input === "J") setScroll((s) => Math.min(maxScroll, s + 1));
       else if (input === "K") setScroll((s) => Math.max(0, s - 1));
-      else if (key.return || key.rightArrow || input === "l") {
-        if (narrow) setFocus("page");
-        else if (page?.links.length) {
-          setFocus("page");
-          ensureVisible(page.linkLines[linkIdx] ?? 0);
-        }
-      } else if (key.escape && filter) setFilter("");
+      else if (key.return || key.rightArrow || input === "l") setFocus("page");
+      else if (key.escape && filter) setFilter("");
       return;
     }
 
-    // page focus: cycle links, follow with enter
+    // page focus: j/k scroll like a pager; the highlighted link is the chosen one if it's on
+    // screen, else the first one on screen; n/N jump between links; enter follows.
     const n = page?.links.length ?? 0;
     if (key.escape || key.leftArrow || input === "h") setFocus("list");
-    else if (input === "J" || ((key.downArrow || input === "j") && !n)) setScroll((s) => Math.min(maxScroll, s + 1));
-    else if (input === "K" || ((key.upArrow || input === "k") && !n)) setScroll((s) => Math.max(0, s - 1));
-    else if ((key.downArrow || input === "j") && n) {
-      const i = (linkIdx + 1) % n;
+    else if (key.downArrow || input === "j" || input === "J") setScroll((s) => Math.min(maxScroll, s + 1));
+    else if (key.upArrow || input === "k" || input === "K") setScroll((s) => Math.max(0, s - 1));
+    else if ((input === "n" || input === "N") && n) {
+      const from = activeLink ?? (input === "n" ? -1 : 0);
+      const i = (from + (input === "n" ? 1 : -1) + n) % n;
       setLinkIdx(i);
       ensureVisible(page!.linkLines[i]!);
-    } else if ((key.upArrow || input === "k") && n) {
-      const i = (linkIdx - 1 + n) % n;
-      setLinkIdx(i);
-      ensureVisible(page!.linkLines[i]!);
-    } else if (key.return && n) go(page!.links[linkIdx]!);
+    } else if (key.return && activeLink !== undefined) go(page!.links[activeLink]!);
   });
 
   // ── header ──
@@ -385,12 +386,12 @@ export function App({ layers, initial, onEdit }: Props) {
         ? "↑↓ · →← open/close · ⏎ root · o page · b"
         : focus === "list"
           ? "↑↓ · ⏎→ open · ← close · x/X all · [ ] · t · /"
-          : "↑↓ link · ⏎ go · J/K␣ scroll · ← list · e edit"
+          : "↑↓␣ scroll · n/N link · ⏎ go · ← list · e"
       : view === "tree"
         ? "↑↓ move  →/l expand  ←/h collapse  space toggle  enter make root  o open page  x collapse all  b back  q quit"
         : focus === "list"
           ? "↑↓ move  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next type  tab page  t tree  b back  / search  e edit  q"
-          : "↑↓ link  enter follow  ←/esc list  space/J/K scroll  t tree  b back  e edit  q quit";
+          : "↑↓/j/k/space scroll  n/N next/prev link  enter follow  ←/esc list  t tree  b back  e edit  q quit";
   const footer = searching ? (
     <Text wrap="truncate">
       <Text color="yellow">/</Text>
@@ -443,7 +444,7 @@ export function App({ layers, initial, onEdit }: Props) {
   const visibleRows = tree.slice(listStart, listStart + innerHeight);
   const multiLayer = layers.length > 1;
   const visibleLines = page?.lines.slice(scroll, scroll + innerHeight) ?? [];
-  const activeLinkLine = focus === "page" && page?.links.length ? page.linkLines[linkIdx] : undefined;
+  const activeLinkLine = focus === "page" && activeLink !== undefined ? page!.linkLines[activeLink] : undefined;
 
   return (
     <Box flexDirection="column" width={columns} height={rows}>

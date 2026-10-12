@@ -331,6 +331,51 @@ describe("rendering and ops", () => {
     expect(section).toContain("relevant to this directory");
   });
 
+  test("paths count only outside summary and only when the value starts with one", () => {
+    put(g, "org/pref.md", obj("summary: standalone PR work goes in ~/Projects/north\nnote: work happens in ~/Projects/north"));
+    put(g, "org/north.md", obj("summary: North\nlocation: [~/Projects/north, ~/wt/north]"));
+    const rel = relevantObjects(Store.load(layers), ["/home/me/wt/north/api"], "/home/me");
+    expect([...rel.direct]).toEqual(["org/north"]);
+  });
+
+  test("inside the relevant set, type priority beats link count; local runs shrink generic shares", () => {
+    put(g, "runbook/.schema.md", "---\ndescription: A runbook\npriority: 1\n---\n");
+    put(g, "org/north.md", obj("summary: North\nlocation: ~/Projects/north"));
+    // 40 well-linked reference notes and one unlinked runbook, all linking to north.
+    for (let i = 0; i < 40; i++) {
+      put(g, `org/reference-${i}.md`, obj(`summary: North reference note number ${i}`, "[[org/north]]"));
+      put(g, `org/fan-${i}.md`, obj(`summary: fan ${i}`, `[[org/reference-${i}]]`));
+    }
+    // As long as the reference lines, so it can't slip into leftover space.
+    put(g, "runbook/deploy.md", obj("summary: How to deploy North safely, step by step", "[[org/north]]"));
+    put(g, ".schema.md", "---\npromptBudget: 1500\n---\n");
+    const at = (s: string, id: string) => s.split("\n").some((l) => l.startsWith(`- [[${id}]]`));
+    const section = renderPromptSection(Store.load(layers), { workPaths: [join(homedir(), "Projects/north")] });
+    expect(at(section, "runbook/deploy")).toBe(true);
+    put(g, "runbook/.schema.md", "---\ndescription: A runbook\n---\n"); // without priority it loses
+    expect(at(renderPromptSection(Store.load(layers), { workPaths: [join(homedir(), "Projects/north")] }), "runbook/deploy")).toBe(false);
+    put(g, "runbook/.schema.md", "---\ndescription: A runbook\npriority: 1\n---\n");
+    expect(parseTypeSchema("---\ndescription: x\npriority: high\n---\n").errors[0]).toContain("priority");
+
+    // Many relevant objects and many fresh generic ones: relevant ones fill before generic ones.
+    for (let i = 0; i < 80; i++) put(g, `org/north-${i}.md`, obj(`summary: north thing number ${i}`, "[[org/north]]"));
+    const old = new Date("2020-01-01");
+    for (let i = 0; i < 80; i++) utimesSync(join(g, `org/north-${i}.md`), old, old);
+    for (let i = 0; i < 6; i++) {
+      put(g, `org/generic-${i}.md`, obj(`summary: generic fresh thing ${i}`));
+      const t = new Date(Date.now() - i * 600_000); // spread out, so not a bulk change
+      utimesSync(join(g, `org/generic-${i}.md`), t, t);
+    }
+    put(g, ".schema.md", "---\npromptBudget: 3000\n---\n");
+    const local = renderPromptSection(Store.load(layers), { workPaths: [join(homedir(), "Projects/north")] });
+    const fullNorth = local.split("\n").filter((l) => /^- \[\[org\/(north-|reference-)/.test(l)).length;
+    const fullGeneric = local.split("\n").filter((l) => l.startsWith("- [[org/generic-")).length;
+    const global = renderPromptSection(Store.load(layers));
+    const fullGenericGlobal = global.split("\n").filter((l) => l.startsWith("- [[org/generic-")).length;
+    expect(fullNorth).toBeGreaterThan(40);
+    expect(fullGeneric).toBeLessThan(fullGenericGlobal);
+  });
+
   test("schema `index` fields appear next to objects", () => {
     put(g, "person/.schema.md", PERSON.replace("---\nBio", "index: [status, works_at]\n---\nBio"));
     put(g, "person/ada.md", obj("summary: Engineer\nname: Ada\nstatus: active\nworks_at: [org/openai]"));

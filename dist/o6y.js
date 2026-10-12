@@ -22,7 +22,7 @@ import {
   renderObjectFooter,
   renderRootIndex,
   renderTypeIndex
-} from "./chunk-e8x3gbg1.js";
+} from "./chunk-wsmnhfrh.js";
 
 // src/cli/o6y.ts
 import { readFileSync as readFileSync3 } from "node:fs";
@@ -893,7 +893,7 @@ ${extra}
       if (!ctx.isTTY)
         throw new UsageError("the viewer needs an interactive terminal");
       process.env.NODE_ENV ??= "production";
-      const { runViewer } = await import("./chunk-yzan5rtg.js");
+      const { runViewer } = await import("./chunk-yj2sw43d.js");
       await runViewer(ctx.layers, { current: id, view: o.tree ? "tree" : "browse", history: [], filter: "", open: [] });
       return 0;
     }

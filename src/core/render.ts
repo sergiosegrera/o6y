@@ -8,6 +8,8 @@ import { formatIssues, INDEX_FILE, type ObjectEntry, SCHEMA_FILE, type Store, ty
 const ROOT_INDEX_PER_TYPE = 50;
 /** Share of the prompt's object budget reserved for the most recently changed objects. */
 const RECENT_SHARE = 0.3;
+/** The recent share when the working directory has relevant objects. */
+const LOCAL_RECENT_SHARE = 0.1;
 /** Shares of the object budget that `alwaysList` types and neighbors of directory matches may take. */
 const ALWAYS_SHARE = 0.35;
 const NEIGHBOR_SHARE = 0.4;
@@ -179,10 +181,14 @@ export function bulkChanged(objects: ObjectEntry[]): Set<string> {
 
 const PATH_TOKEN = /(?:^|[\s(,;])((?:~\/|\/)[^\s,;()]+)/g;
 
-/** Absolute or `~/` paths in a field value, including paths inside prose ("~/x (primary) + ~/y"). */
+/**
+ * Paths in a field value that starts with a path: `~/x`, or `~/x (primary checkout) + ~/y`. A
+ * value that only mentions a path in prose ("goes in ~/x") doesn't count.
+ */
 function pathValues(value: unknown, out: string[] = []): string[] {
   if (typeof value === "string") {
-    for (const m of value.matchAll(PATH_TOKEN)) out.push(m[1]!);
+    const trimmed = value.trim();
+    if (trimmed.startsWith("/") || trimmed.startsWith("~/")) for (const m of trimmed.matchAll(PATH_TOKEN)) out.push(m[1]!);
   } else if (Array.isArray(value)) {
     for (const v of value) pathValues(v, out);
   }
@@ -193,7 +199,8 @@ function pathValues(value: unknown, out: string[] = []): string[] {
  * Objects relevant to where the agent is working: an object with a path field containing one of
  * `workPaths` (e.g. `location: ~/Projects/north` for cwd ~/Projects/north/api), or whose slug is
  * the directory's name (`direct`), plus the objects that link to those (`linked`). Outgoing links
- * are left out: a hub like system/north links to half the store.
+ * are left out: a hub like system/north links to half the store. `summary` is never read for
+ * paths, and a value counts only if it starts with one.
  */
 export function relevantObjects(store: Store, workPaths: string[], home = homedir()): { direct: Set<string>; linked: Set<string> } {
   const direct = new Set<string>();
@@ -203,7 +210,8 @@ export function relevantObjects(store: Store, workPaths: string[], home = homedi
       direct.add(obj.id);
       continue;
     }
-    for (const raw of Object.values(obj.data).flatMap((v) => pathValues(v))) {
+    const values = Object.entries(obj.data).filter(([field]) => field !== "summary").map(([, v]) => v);
+    for (const raw of values.flatMap((v) => pathValues(v))) {
       const p = (raw.startsWith("~/") ? join(home, raw.slice(2)) : raw).replace(/\/+$/, "");
       if (!p || p === home) continue;
       if (workPaths.some((w) => w === p || w.startsWith(`${p}/`))) {
@@ -295,11 +303,19 @@ export function buildPromptSection(store: Store, options: PromptOptions = {}): {
   const recent = all
     .filter((o) => !bulk.has(o.id))
     .sort((a, b) => b.mtimeMs - a.mtimeMs || a.id.localeCompare(b.id));
+  // Inside the relevant set: type `priority` first, then links, then recency.
+  const priority = (o: ObjectEntry) => store.types.get(o.type)?.schema.priority ?? 0;
+  const relevant = [...linked]
+    .map((id) => store.objects.get(id)!)
+    .sort((a, b) => priority(b) - priority(a) || inbound(store, b) - inbound(store, a) || b.mtimeMs - a.mtimeMs || a.id.localeCompare(b.id));
+  // With directory matches, generic shares shrink and leftover relevant objects come before them.
+  const local = direct.size > 0;
   const groups: { objects: ObjectEntry[]; limit: number }[] = [
     { objects: ranked.filter((o) => direct.has(o.id)), limit: budget },
     { objects: ranked.filter((o) => store.types.get(o.type)?.schema.alwaysList), limit: budget * ALWAYS_SHARE },
-    { objects: ranked.filter((o) => linked.has(o.id)), limit: budget * NEIGHBOR_SHARE },
-    { objects: recent, limit: budget * RECENT_SHARE },
+    { objects: relevant, limit: budget * NEIGHBOR_SHARE },
+    { objects: recent, limit: budget * (local ? LOCAL_RECENT_SHARE : RECENT_SHARE) },
+    { objects: relevant, limit: budget },
     { objects: ranked, limit: budget },
   ];
 

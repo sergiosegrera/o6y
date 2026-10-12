@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0
+
+- **Relevance ranking** (from feedback on 0.5.0):
+  - New type option `priority` (an integer, default 0). Among objects relevant to the working directory, higher-priority types come first, then link count, then recency, so runbooks and features stop losing to well-linked reference notes.
+  - Path matching ignores `summary` and only reads field values that start with a path. A preference saying "goes in ~/Projects/north" no longer matches every North worktree.
+  - When the directory has relevant objects, the recency share drops from 30% to 10%, and the remaining relevant objects fill the budget before the most-linked share.
+- **Viewer fix:** on a page, `j`/`k`/arrows now scroll like a pager instead of jumping between the links at the bottom, so you can always get back to the top of a long page. The highlighted link is the one on screen, `n`/`N` jump to the next or previous link, and `enter` follows it. Opening a page no longer scrolls to its links.
+
 ## 0.5.0
 
 - **Memory list in the prompt** (from feedback on a real 167-object store):

@@ -38,6 +38,7 @@ fields:
   launched: { type: date, required: true, description: first prod deploy }
 index: [owner, language]                         # optional, max 3: shown next to objects in indexes
 alwaysList: true                                 # optional: always give every object a full line in the prompt
+priority: 1                                      # optional: rank first among objects relevant to the working directory
 ---
 Writing guidance for objects of this type (free markdown). It is advisory and never validated,
 and it is shown in the type's index.md.
@@ -58,7 +59,7 @@ Field options: `required`, `description`, plus `values` for enums and `to` / `ma
 
 Use `alwaysList: true` for types whose summaries should always be in front of you (the starter `preference` type has it). They get up to 35% of the prompt budget, so keep such types small.
 
-Objects with a path field (e.g. `location: ~/Projects/north`) are ranked first in the prompt when you work inside that path, followed by the objects that link to them. A `location` field on repo or system objects is therefore worth having. Keep it a plain path, or a list of paths, rather than prose.
+Objects with a path field (e.g. `location: ~/Projects/north`) are ranked first in the prompt when you work inside that path, followed by the objects that link to them. A `location` field on repo or system objects is therefore worth having. A value counts only if it starts with a path (`~/Projects/north`, or a list of paths), and `summary` is never read for paths. Among the relevant objects, types with a higher `priority` come first (default 0). Give it to types you need while working in a repo, such as runbooks, features or gotchas.
 
 ## Root schema: `<store>/.schema.md`
 
