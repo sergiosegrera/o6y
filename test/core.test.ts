@@ -7,7 +7,7 @@ import { parseDoc } from "../src/core/frontmatter.ts";
 import { appendLog, bootstrap, diffSnapshot, restoreSnapshot, takeSnapshot } from "../src/core/fsops.ts";
 import { extractBodyLinks, normalizeLinkValue } from "../src/core/links.ts";
 import { lint, query } from "../src/core/ops.ts";
-import { renderObjectFooter, renderPromptSection, renderRootIndex, renderTypeIndex } from "../src/core/render.ts";
+import { displayPath, renderObjectFooter, renderPromptSection, renderRootIndex, renderTypeIndex } from "../src/core/render.ts";
 import { parseTypeSchema } from "../src/core/schema.ts";
 import { blockingIssues, changeWarnings, classifyPath, type Layer, makeLayers, Store } from "../src/core/store.ts";
 
@@ -336,5 +336,43 @@ describe("store format", () => {
     put(p, "org/x.md", obj("summary: x"));
     expect(ensureFormat(layers[1]!).status).toBe("stamped");
     expect(readFileSync(join(p, ".schema.md"), "utf8")).toBe(`---\no6yFormat: ${FORMAT_VERSION}\n---\n`);
+  });
+});
+
+describe("pinned objects", () => {
+  test("pinned bodies are injected in full and marked in indexes", () => {
+    put(g, "org/acme.md", obj("summary: Our company\npinned: true", "Never deploy on Fridays.\n"));
+    const store = Store.load(layers);
+    expect(store.errors()).toEqual([]);
+    const section = renderPromptSection(store);
+    expect(section).toContain("Pinned (always loaded):");
+    expect(section).toContain("### [[org/acme]] — Our company\nNever deploy on Fridays.");
+    expect(renderTypeIndex(store, "org")).toContain("- [[org/acme]] (pinned) — Our company");
+  });
+
+  test("pinned must be boolean and cannot be declared in a schema", () => {
+    put(g, "org/acme.md", obj("summary: x\npinned: yes please"));
+    expect(Store.load(layers).errors().map((i) => i.message)).toEqual(["`pinned` must be true or false"]);
+    expect(parseTypeSchema("---\ndescription: x\nfields:\n  pinned: boolean\n---\n").errors[0]).toContain("reserved");
+  });
+
+  test("pinning past the budget blocks the write; lowering the budget blocks the root schema edit", () => {
+    put(g, ".schema.md", "---\npinnedBudget: 60\n---\n");
+    put(g, "org/a.md", obj("summary: first\npinned: true", "a".repeat(30)));
+    const path = join(g, "org/b.md");
+    const before = Store.load(layers);
+    expect(before.errors()).toEqual([]);
+    const after = Store.load(layers, new Map([[path, obj("summary: second\npinned: true", "b".repeat(30))]]));
+    const blocking = blockingIssues(before, after, new Set([path]));
+    expect(blocking.map((i) => i.code)).toEqual(["pinned-budget", "pinned-budget"]); // shared budget: both are flagged
+    expect(blocking[0]!.message).toContain("org/a (35), org/b (36)");
+    const root = join(g, ".schema.md");
+    const lowered = Store.load(layers, new Map([[root, "---\npinnedBudget: 10\n---\n"]]));
+    expect(blockingIssues(before, lowered, new Set([root])).map((i) => i.path)).toEqual([join(g, "org/a.md")]);
+  });
+
+  test("display paths use ~ for the home directory", () => {
+    expect(displayPath("/Users/x/.agents/o6y", "/Users/x")).toBe("~/.agents/o6y");
+    expect(displayPath("/Users/xy/o6y", "/Users/x")).toBe("/Users/xy/o6y");
   });
 });

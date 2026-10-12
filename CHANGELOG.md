@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0
+
+- Pinned objects: `pinned: true` loads an object's full content into every session. All pinned objects share a `pinnedBudget` (default 2500 characters), and writes that would exceed it are rejected.
+- Store paths in the prompt and in indexes are shown as `~/…`, so they are shorter and harder to mistype.
+
 ## 0.1.0
 
 First release.

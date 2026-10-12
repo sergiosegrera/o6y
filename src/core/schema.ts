@@ -27,14 +27,17 @@ export interface TypeSchema {
 export interface RootSettings {
   summaryMaxLength: number;
   promptBudget: number;
+  /** Max characters of pinned objects (summary + body), injected in full every session. */
+  pinnedBudget: number;
 }
 
 export const DEFAULT_SETTINGS: RootSettings = {
   summaryMaxLength: 80,
   promptBudget: 8000,
+  pinnedBudget: 2500,
 };
 
-export const RESERVED_FIELDS = ["summary"];
+export const RESERVED_FIELDS = ["summary", "pinned"];
 
 export interface RootSchema {
   settings: Partial<RootSettings>;
@@ -183,6 +186,10 @@ export function validateFields(
     issues.push({ field: "summary", message: "must be a single line" });
   } else if (summary.length > settings.summaryMaxLength) {
     issues.push({ field: "summary", message: `is ${summary.length} chars; max is ${settings.summaryMaxLength}` });
+  }
+
+  if (data.pinned !== undefined && typeof data.pinned !== "boolean") {
+    issues.push({ field: "pinned", message: "must be true or false" });
   }
 
   for (const [name, field] of Object.entries(schema.fields)) {

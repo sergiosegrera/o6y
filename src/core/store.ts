@@ -125,6 +125,7 @@ export interface ObjectEntry {
   data: Record<string, unknown>;
   body: string;
   summary: string;
+  pinned: boolean;
   mtimeMs: number;
   /** Typed frontmatter links. */
   fieldLinks: { field: string; target: string }[];
@@ -292,6 +293,7 @@ export class Store {
         data: doc.data,
         body: doc.body,
         summary: typeof doc.data.summary === "string" ? doc.data.summary : "",
+        pinned: doc.data.pinned === true,
         mtimeMs: file.mtimeMs,
         fieldLinks: links.map(({ field, target }) => ({ field, target })),
         bodyLinks: extractBodyLinks(doc.body),
@@ -304,6 +306,21 @@ export class Store {
         }
       }
       this.objects.set(info.id, entry);
+    }
+
+    // Pinned objects are injected in full every session, so their total size is capped.
+    const pinned = this.pinnedObjects();
+    const pinnedSize = pinned.reduce((n, o) => n + pinnedCost(o), 0);
+    if (pinnedSize > settings.pinnedBudget) {
+      const list = pinned.map((o) => `${o.id} (${pinnedCost(o)})`).join(", ");
+      for (const obj of pinned) {
+        this.issue(
+          obj.path,
+          "error",
+          "pinned-budget",
+          `pinned objects total ${pinnedSize} chars, over pinnedBudget ${settings.pinnedBudget}; unpin or shorten something. Pinned: ${list}`,
+        );
+      }
     }
 
     // Pass 3: link resolution, backlinks, wanted pages.
@@ -379,6 +396,10 @@ export class Store {
     return this.issues.filter((i) => i.path === path);
   }
 
+  pinnedObjects(): ObjectEntry[] {
+    return [...this.objects.values()].filter((o) => o.pinned).sort((a, b) => a.id.localeCompare(b.id));
+  }
+
   objectsOfType(type: string): ObjectEntry[] {
     return [...this.objects.values()].filter((o) => o.type === type).sort((a, b) => a.id.localeCompare(b.id));
   }
@@ -401,6 +422,11 @@ export class Store {
   private issue(path: string, severity: Severity, code: string, message: string): void {
     this.issues.push({ path, severity, code, message });
   }
+}
+
+/** Characters a pinned object costs in the system prompt. */
+export function pinnedCost(obj: ObjectEntry): number {
+  return obj.summary.length + obj.body.trim().length;
 }
 
 export function issueKey(issue: Issue): string {

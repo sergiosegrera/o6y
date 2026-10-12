@@ -37,7 +37,8 @@ Anything else inside a store is rejected.
 ```md
 ---
 summaryMaxLength: 80      # hard cap on every object's `summary`
-promptBudget: 8000        # max characters of memory injected into the system prompt
+promptBudget: 8000        # max characters of the memory catalog injected into the system prompt
+pinnedBudget: 2500        # max characters (summary + body) of all pinned objects together
 ---
 Free-form guidance for the whole memory (shown in the system prompt).
 ```
@@ -65,6 +66,7 @@ Field types: `string`, `number`, `boolean`, `date` (`YYYY-MM-DD` or ISO datetime
 `many: true` for a list of links). The shorthand `name: string` means `{ type: string }`.
 
 `summary` is reserved and implicit in every type: required string, at most `summaryMaxLength` chars.
+`pinned` is reserved too: optional boolean (see Pinned objects).
 Fields an object has but its schema doesn't declare are allowed.
 
 ## Objects
@@ -80,6 +82,12 @@ Body text with [[concept/llm-wiki]] links.
 
 Link values in frontmatter can be written as `org/openai`, `"[[org/openai]]"` or unquoted
 `[[org/openai]]` (a list of those for `many`).
+
+## Pinned objects
+
+`pinned: true` loads an object's full content into the system prompt in every session, in a "Pinned" section above the catalog. This is how knowledge gets marked as always relevant, while the catalog itself stays generated.
+
+The combined size (summary + body) of all pinned objects is capped by `pinnedBudget`, separately from `promptBudget`. Exceeding it is an error on every pinned object, so pinning past the budget, or lowering the budget, is rejected.
 
 ## Links
 
@@ -118,6 +126,7 @@ Link values in frontmatter can be written as `org/openai`, `"[[org/openai]]"` or
 
 At session start, o6y computes an `<o6y>` section once and injects it into every run, so the prompt cache stays stable. `/o6y` refreshes it. The section holds:
 - short usage rules that point to the `o6y` skill
+- pinned objects, in full
 - the store paths
 - root guidance
 - every type with its fields, and its objects grouped beneath it, bounded by `promptBudget`

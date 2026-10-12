@@ -53,14 +53,15 @@ and it is shown in the type's index.md.
 | `link` | `type/slug`. Options: `to` (a type, a list of types, or `any`, the default) and `many: true` for a list |
 
 Field options: `required`, `description`, plus `values` for enums and `to` / `many` for links.
-`summary` is reserved and implicit in every type, so don't declare it.
+`summary` and `pinned` are reserved and implicit in every type, so don't declare them.
 
 ## Root schema: `<store>/.schema.md`
 
 ```md
 ---
 summaryMaxLength: 80   # max chars of every object's summary
-promptBudget: 8000     # max chars of memory injected into the system prompt
+promptBudget: 8000     # max chars of the memory catalog injected into the system prompt
+pinnedBudget: 2500     # max chars (summary + body) of all pinned objects combined
 ---
 Guidance for the whole store (shown in the system prompt).
 ```
@@ -81,6 +82,17 @@ Body in markdown. Mention other objects as [[system/ledger]], [[person/ana|Ana]]
 - Typed link fields accept `team/payments`, `"[[team/payments]]"` or unquoted `[[team/payments]]`.
   For `many`, use a YAML list (`[a/b, c/d]` or `- a/b` lines).
 - Fields the schema doesn't declare are allowed; lint lists them.
+
+## Pinned objects
+
+Add `pinned: true` to an object's frontmatter, and its full content (summary and body) is loaded into
+the system prompt in every session. Use it sparingly, for knowledge that must never be missed:
+hard rules, critical contacts, standing instructions.
+
+All pinned objects together must fit in `pinnedBudget`. A write that would exceed it is rejected
+and lists what's pinned, so unpin something or tighten it. Find pinned objects with
+`o6y_query` using `where: { pinned: true }`. The root schema's body is also loaded every session; use
+it for store-wide guidance, and pinned objects for specific facts.
 
 ## Links: what's an error and what's a warning
 

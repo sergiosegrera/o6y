@@ -19,7 +19,7 @@ See [SPEC.md](SPEC.md) for the full design.
 Requires pi ≥ 1.0.
 
 ```bash
-pi install git:github.com/sergiosegrera/o6y@v0.1.0   # pinned to a release
+pi install git:github.com/sergiosegrera/o6y@v0.2.0   # pinned to a release
 pi install git:github.com/sergiosegrera/o6y          # follows the default branch
 pi install git:github.com/sergiosegrera/o6y -l       # this project only (.pi/settings.json)
 pi -e git:github.com/sergiosegrera/o6y               # try it for one run, without installing
@@ -43,6 +43,8 @@ Starter schemas are seeded into an empty global store. They are light and develo
 - `practice`
 - `decision`
 - `gotcha`
+
+To have something load in every session, set `pinned: true` on its object. The total size of pinned objects is capped by `pinnedBudget` in the root schema (`~/.agents/o6y/.schema.md`). The root schema's body is loaded every session too, as store-wide guidance.
 
 The full manual ships as the `o6y` skill. The agent loads it on demand, or you can force it with `/skill:o6y`.
 

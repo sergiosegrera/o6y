@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { normalizeLinkValue } from "./links.ts";
 import { describeField } from "./schema.ts";
@@ -7,6 +8,11 @@ import { formatIssues, INDEX_FILE, type ObjectEntry, SCHEMA_FILE, type Store, ty
 const ROOT_INDEX_PER_TYPE = 50;
 /** Share of the prompt's object budget reserved for the most recently changed objects. */
 const RECENT_SHARE = 0.3;
+
+/** Shortens paths under the home directory to `~/…`; long absolute paths invite typos. */
+export function displayPath(path: string, home = homedir()): string {
+  return path === home || path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
+}
 
 function fieldsLine(type: TypeEntry): string {
   const fields = Object.entries(type.schema.fields).map(([name, f]) => describeField(name, f));
@@ -28,6 +34,7 @@ function objectLine(store: Store, obj: ObjectEntry): string {
   const values = (schema?.index ?? [])
     .map((name) => formatValue(obj.data[name], schema!.fields[name]?.type === "link"))
     .filter((v): v is string => v !== undefined);
+  if (obj.pinned) values.push("pinned");
   if (store.layers.length > 1 && obj.layer.name === "project") values.push("project");
   const meta = values.length ? ` (${values.join(" · ")})` : "";
   return `- [[${obj.id}]]${meta} — ${obj.summary || "(no summary)"}`;
@@ -64,7 +71,7 @@ function wantedLines(store: Store, filter: (id: string) => boolean = () => true,
 
 /** The full catalog: every type with its objects (bounded per type), wanted pages and issues. */
 export function renderRootIndex(store: Store): string {
-  const lines = ["# o6y index (virtual, generated)", "", "Stores:", ...store.layers.map((l) => `- ${l.name}: ${l.root}`)];
+  const lines = ["# o6y index (virtual, generated)", "", "Stores:", ...store.layers.map((l) => `- ${l.name}: ${displayPath(l.root)}`)];
   for (const layer of store.layers) {
     const guidance = store.rootGuidance.get(layer.name);
     if (guidance) lines.push("", `Guidance (${layer.name}):`, guidance);
@@ -76,7 +83,7 @@ export function renderRootIndex(store: Store): string {
     const objects = store.objectsOfType(type.name).sort((a, b) => inbound(store, b) - inbound(store, a) || a.id.localeCompare(b.id));
     for (const obj of objects.slice(0, ROOT_INDEX_PER_TYPE)) lines.push(objectLine(store, obj));
     if (objects.length > ROOT_INDEX_PER_TYPE) {
-      lines.push(`… ${objects.length - ROOT_INDEX_PER_TYPE} more: read ${join(type.layer.root, type.name, INDEX_FILE)}`);
+      lines.push(`… ${objects.length - ROOT_INDEX_PER_TYPE} more: read ${displayPath(join(type.layer.root, type.name, INDEX_FILE))}`);
     }
   }
 
@@ -101,7 +108,7 @@ export function renderTypeIndex(store: Store, typeName: string): string | undefi
     "",
     type.schema.description,
     "",
-    `Schema: ${type.path}`,
+    `Schema: ${displayPath(type.path)}`,
     `Fields: ${fieldsLine(type)}`,
   ];
   if (type.schema.guidance) lines.push("", "## Guidance", "", type.schema.guidance);
@@ -134,6 +141,7 @@ export function renderObjectFooter(store: Store, id: string, path: string): stri
 
 const RULES = `o6y is your persistent, typed memory: a wiki of markdown files you read and write with your normal tools. Load the \`o6y\` skill for the full manual (schema syntax, links, layers, migrations) before creating or changing schemas or doing anything non-trivial in it.
 - Objects are <store>/<type>/<kebab-slug>.md with YAML frontmatter. \`summary\` (one line, max {MAX} chars) is required; other fields come from <type>/${SCHEMA_FILE}, whose body also says how to write that type.
+- Set \`pinned: true\` on an object to load its full content in every session. Reserve it for critical, always-relevant knowledge; the total is capped by \`pinnedBudget\`.
 - Link objects with [[type/slug]]. Links to things that don't exist yet are allowed (reported as warnings / wanted pages).
 - ${INDEX_FILE} files are virtual: <store>/${INDEX_FILE} is the full catalog, <store>/<type>/${INDEX_FILE} lists one type. Reading an object shows its backlinks.
 - Writes are validated; when one is rejected, fix it and retry. Bash changes to a store are validated as a transaction and rolled back if they break it.
@@ -149,11 +157,16 @@ export function renderPromptSection(store: Store): string {
     RULES.replace("{MAX}", String(store.settings.summaryMaxLength)),
     "",
     "Stores:",
-    ...store.layers.map((l) => `- ${l.name}: ${l.root}`),
+    ...store.layers.map((l) => `- ${l.name}: ${displayPath(l.root)}`),
   ];
   for (const layer of store.layers) {
     const guidance = store.rootGuidance.get(layer.name);
     if (guidance) head.push("", `Guidance (${layer.name}):`, guidance);
+  }
+  const pinned = store.pinnedObjects();
+  if (pinned.length) {
+    head.push("", "Pinned (always loaded):");
+    for (const obj of pinned) head.push("", `### [[${obj.id}]] — ${obj.summary}`, obj.body.trim());
   }
   const types = sortedTypes(store);
   const headers = new Map(types.map((t) => [t.name, typeHeader(store, t, "##")]));
@@ -184,7 +197,7 @@ export function renderPromptSection(store: Store): string {
     const shown = objects.filter((o) => chosen.has(o.id));
     body.push("", ...headers.get(type.name)!, ...shown.map((o) => lineOf.get(o.id)!));
     if (shown.length < objects.length) {
-      body.push(`… ${objects.length - shown.length} more: read ${join(type.layer.root, type.name, INDEX_FILE)}`);
+      body.push(`… ${objects.length - shown.length} more: read ${displayPath(join(type.layer.root, type.name, INDEX_FILE))}`);
     }
   }
   const summary = `\nMemory: ${store.objects.size} objects in ${store.types.size} types${
