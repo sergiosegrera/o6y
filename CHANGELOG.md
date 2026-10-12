@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- The package entry is now `index.ts`, so pi lists the extension as `sergiosegrera/o6y` (git) or `o6y` (npm) instead of `…:src/extension.ts`.
+
 ## 0.3.0
 
 - Tighter starter types: `person`, `preference` (how the user or team wants things done), `note` (tagged catch-all) and `decision`. These replace person/team/system/practice/decision/gotcha. Existing stores are not changed.

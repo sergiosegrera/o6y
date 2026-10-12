@@ -19,7 +19,7 @@ See [SPEC.md](SPEC.md) for the full design.
 Requires pi ≥ 1.0.
 
 ```bash
-pi install git:github.com/sergiosegrera/o6y@v0.3.0   # pinned to a release
+pi install git:github.com/sergiosegrera/o6y@v0.3.1   # pinned to a release
 pi install git:github.com/sergiosegrera/o6y          # follows the default branch
 pi install git:github.com/sergiosegrera/o6y -l       # this project only (.pi/settings.json)
 pi -e git:github.com/sergiosegrera/o6y               # try it for one run, without installing
