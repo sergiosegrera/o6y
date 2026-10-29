@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.1
+
+- **Viewer:** the activity timeline shows only store changes; suggestions and opens are no longer listed (`o6y suggestions` still summarizes them).
+- **Viewer:** activity days start collapsed and expand like browse types (`enter`/`→`, `←`, `x`/`X` for all, `[`/`]` between days). A day's page lists its changes with their times and sources.
+- **Viewer:** `g`/`G` (or `Home`/`End`) jump to the top or bottom of any list or page.
+
 ## 0.8.0
 
 - **Viewer: activity replaces the link tree.** `2` (or `a`) opens a timeline of the store: creates, updates and deletes from `log.md` with what made them, grouped by day, with same-second batches (a bash migration, an `o6y mv`) collapsed. With semantic search on, it also shows suggestions (`◆` with score) and when the agent opened them (`↗`). `o6y view --tree` is gone; `o6y view --activity` opens on the timeline. Backlinks are still on every page.

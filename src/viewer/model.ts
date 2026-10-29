@@ -7,7 +7,6 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { stringify } from "yaml";
 import { type Edge, neighbors } from "../core/ops.ts";
-import { readSuggestionLog } from "../core/semantic.ts";
 import { type Layer, LOG_FILE, type ObjectEntry, type Store } from "../core/store.ts";
 
 export { type Edge, neighbors };
@@ -331,18 +330,16 @@ export function renderWantedPage(store: Store, width: number): Page {
 
 // ── activity ─────────────────────────────────────────────────────────────
 
-export type ActivityAction = "create" | "update" | "delete" | "suggest" | "open";
+export type ActivityAction = "create" | "update" | "delete";
 
 export interface ActivityEntry {
   at: number;
   action: ActivityAction;
   /** An object id, `schema <type>`, `root schema`, or a store-relative path (as log.md names it). */
   target: string;
-  /** What made the change (`write`, `edit`, `bash`, `o6y mv`…), or for suggestions the session. */
+  /** What made the change: `write`, `edit`, `bash`, `o6y mv`… */
   via: string;
   layer: string;
-  /** Suggestions: rerank score. */
-  score?: number;
 }
 
 const LOG_LINE = /^- (\S+) (create|update|delete) (.+) \((.+)\)$/;
@@ -358,33 +355,30 @@ export function parseLog(text: string, layer: string): ActivityEntry[] {
   return out;
 }
 
-/** Store changes from every layer's log.md, plus suggestions and opens from the suggestion log. */
-export function readActivity(layers: Layer[], cache?: string): ActivityEntry[] {
+/** Store changes from every layer's log.md, newest first. */
+export function readActivity(layers: Layer[]): ActivityEntry[] {
   const entries: ActivityEntry[] = [];
   for (const layer of layers) {
     try {
       entries.push(...parseLog(readFileSync(join(layer.root, LOG_FILE), "utf8"), layer.name));
     } catch {}
   }
-  if (cache) {
-    for (const r of readSuggestionLog(cache)) {
-      const at = Date.parse(r.t);
-      if (Number.isNaN(at)) continue;
-      if (r.type === "suggest") for (const h of r.hits) entries.push({ at, action: "suggest", target: h.id, via: r.session, layer: "", score: h.score });
-      else entries.push({ at, action: "open", target: r.id, via: r.via, layer: "" });
-    }
-  }
   return entries.sort((a, b) => b.at - a.at);
 }
 
 export type ActivityRow =
-  | { kind: "day"; key: string; label: string; count: number }
+  | { kind: "day"; key: string; label: string; entries: ActivityEntry[]; open: boolean }
   | { kind: "entry"; key: string; entry: ActivityEntry; nested: boolean }
   | { kind: "batch"; key: string; entries: ActivityEntry[]; open: boolean };
 
 /** Changes this many or more with the same second and source (a bash migration, an `o6y mv`) collapse into one row. */
 const BATCH_MIN = 3;
-const isSuggestion = (e: ActivityEntry) => e.action === "suggest" || e.action === "open";
+
+/** A day header's key: its local date, so it stays put as days go by. */
+export const dayKey = (at: number) => {
+  const d = new Date(at);
+  return `day:${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
 
 function dayLabel(at: number, now: Date): string {
   const d = new Date(at);
@@ -395,18 +389,22 @@ function dayLabel(at: number, now: Date): string {
 }
 
 /**
- * Newest first, under day headers. Same-second changes from one source collapse into a batch
- * row; only batches whose key is in `open` list their entries. `query` matches target or source.
+ * Newest first, under day headers. Like the browse list, only headers whose key is in `open`
+ * show their rows (days start collapsed), and every day is open while filtering. Same-second
+ * changes from one source collapse into a batch row, expanded the same way. `query` matches
+ * target or source.
  */
 export function activityRows(entries: ActivityEntry[], open: Set<string>, query = "", now = new Date()): ActivityRow[] {
   const q = query.toLowerCase();
   const shown = q ? entries.filter((e) => e.target.toLowerCase().includes(q) || e.via.toLowerCase().includes(q)) : entries;
-  const groups: ActivityEntry[][] = [];
+  const days: { key: string; at: number; groups: ActivityEntry[][] }[] = [];
   for (const e of shown) {
-    const g = groups[groups.length - 1];
-    const head = g?.[0];
-    if (head && head.at === e.at && head.via === e.via && isSuggestion(head) === isSuggestion(e)) g.push(e);
-    else groups.push([e]);
+    const key = dayKey(e.at);
+    let day = days[days.length - 1];
+    if (day?.key !== key) days.push((day = { key, at: e.at, groups: [] }));
+    const g = day.groups[day.groups.length - 1];
+    if (g && g[0]!.at === e.at && g[0]!.via === e.via) g.push(e);
+    else day.groups.push([e]);
   }
   const rows: ActivityRow[] = [];
   const seen = new Map<string, number>();
@@ -415,28 +413,26 @@ export function activityRows(entries: ActivityEntry[], open: Set<string>, query 
     seen.set(base, n + 1);
     return n ? `${base}#${n}` : base;
   };
-  let day: Extract<ActivityRow, { kind: "day" }> | undefined;
-  for (const g of groups) {
-    const label = dayLabel(g[0]!.at, now);
-    if (day?.label !== label) {
-      day = { kind: "day", key: unique(`day:${label}`), label, count: 0 };
-      rows.push(day);
+  const entryRow = (e: ActivityEntry, nested: boolean): ActivityRow => ({
+    kind: "entry",
+    key: unique(`${e.at}|${e.action}|${e.target}|${e.via}`),
+    entry: e,
+    nested,
+  });
+  for (const day of days) {
+    const isOpen = !!q || open.has(day.key);
+    rows.push({ kind: "day", key: day.key, label: dayLabel(day.at, now), entries: day.groups.flat(), open: isOpen });
+    if (!isOpen) continue;
+    for (const g of day.groups) {
+      if (g.length < BATCH_MIN) {
+        for (const e of g) rows.push(entryRow(e, false));
+        continue;
+      }
+      const key = unique(`batch:${g[0]!.at}|${g[0]!.via}`);
+      const batchOpen = open.has(key);
+      rows.push({ kind: "batch", key, entries: g, open: batchOpen });
+      if (batchOpen) for (const e of g) rows.push(entryRow(e, true));
     }
-    day.count += g.length;
-    const entryRow = (e: ActivityEntry, nested: boolean): ActivityRow => ({
-      kind: "entry",
-      key: unique(`${e.at}|${e.action}|${e.target}|${e.via}`),
-      entry: e,
-      nested,
-    });
-    if (g.length < BATCH_MIN) {
-      for (const e of g) rows.push(entryRow(e, false));
-      continue;
-    }
-    const key = unique(`batch:${g[0]!.at}|${g[0]!.via}|${isSuggestion(g[0]!) ? "s" : "c"}`);
-    const isOpen = open.has(key);
-    rows.push({ kind: "batch", key, entries: g, open: isOpen });
-    if (isOpen) for (const e of g) rows.push(entryRow(e, true));
   }
   return rows;
 }
@@ -445,14 +441,10 @@ const ACTION_MARK: Record<ActivityAction, { mark: string; color: string; verb: s
   create: { mark: "+", color: "green", verb: "created" },
   update: { mark: "~", color: "yellow", verb: "updated" },
   delete: { mark: "−", color: "red", verb: "deleted" },
-  suggest: { mark: "◆", color: "cyan", verb: "suggested" },
-  open: { mark: "↗", color: "blue", verb: "opened" },
 };
 
 const clock = (at: number) => new Date(at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
 
-/** What an entry shows on the right: the source, or for a suggestion its score. */
-const entrySource = (e: ActivityEntry) => (e.action === "suggest" ? (e.score ?? 0).toFixed(2) : e.via);
 
 function batchSummary(entries: ActivityEntry[]): string {
   const counts = new Map<ActivityAction, number>();
@@ -463,13 +455,18 @@ function batchSummary(entries: ActivityEntry[]): string {
 /** One row of the activity list. */
 export function activityLine(store: Store, row: ActivityRow, width: number, selected: boolean, changed?: Set<string>): Line {
   if (row.kind === "day") {
-    return [{ text: row.label, bold: true, color: "magenta" }, { text: ` ${row.count}`, dim: true }];
+    const label = `${row.open ? "▾" : "▸"} ${row.label}`;
+    const count = ` ${batchSummary(row.entries)}`;
+    return [
+      { text: label, bold: true, color: "magenta", inverse: selected },
+      { text: " ".repeat(Math.max(1, width - label.length - count.length)) },
+      { text: truncate(count, Math.max(0, width - label.length - 1)), dim: true },
+    ];
   }
   if (row.kind === "batch") {
     const head = row.entries[0]!;
-    const what = isSuggestion(head) ? `${row.entries.length} suggested` : `${row.entries.length} changes`;
-    const left = `${clock(head.at)} ${row.open ? "▾" : "▸"} ${what} `;
-    const right = ` ${batchSummary(row.entries)} · ${isSuggestion(head) ? "suggestions" : head.via}`;
+    const left = `${clock(head.at)} ${row.open ? "▾" : "▸"} ${row.entries.length} changes `;
+    const right = ` ${batchSummary(row.entries)} · ${head.via}`;
     return [
       { text: left, bold: selected, inverse: selected, color: selected ? "cyan" : undefined },
       { text: truncate(right, Math.max(0, width - left.length)), dim: true },
@@ -479,7 +476,7 @@ export function activityLine(store: Store, row: ActivityRow, width: number, sele
   const a = ACTION_MARK[e.action];
   const time = row.nested ? "   " : clock(e.at);
   const missing = !e.target.includes(" ") && e.target.includes("/") && !store.objects.has(e.target);
-  const source = ` ${entrySource(e)}`;
+  const source = ` ${e.via}`;
   const mark = changed?.has(e.target) ? " •" : "";
   const nameWidth = Math.max(4, width - time.length - 3 - mark.length - (width > 34 ? source.length : 0));
   const segs: Line = [
@@ -510,7 +507,7 @@ export function renderActivityPage(store: Store, row: ActivityRow, width: number
   const stamp = (at: number) => new Date(at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "medium" });
   const describeEntry = (e: ActivityEntry): Line => {
     const a = ACTION_MARK[e.action];
-    return [{ text: `${a.mark} ${a.verb}`, color: a.color }, { text: ` ${stamp(e.at)} · ${e.action === "suggest" ? `score ${entrySource(e)}` : e.action === "open" ? `via ${e.via}` : e.via}${e.layer ? ` · ${e.layer}` : ""}`, dim: true }];
+    return [{ text: `${a.mark} ${a.verb}`, color: a.color }, { text: ` ${stamp(e.at)} · ${e.via} · ${e.layer}`, dim: true }];
   };
   if (row.kind === "entry") {
     const { object, type } = activityTarget(store, row);
@@ -521,25 +518,29 @@ export function renderActivityPage(store: Store, row: ActivityRow, width: number
     lines.push([{ text: row.entry.action === "delete" || !store.objects.has(row.entry.target) ? "No longer in the store." : "", dim: true }]);
     return { lines, links, linkLines };
   }
-  const entries = row.kind === "batch" ? row.entries : [];
-  if (row.kind === "day") lines.push([{ text: row.label, bold: true, color: "magenta" }, { text: ` ${row.count} events`, dim: true }]);
-  else {
-    const head = entries[0]!;
-    lines.push([{ text: isSuggestion(head) ? `${entries.length} suggestions` : `${entries.length} changes`, bold: true }, { text: ` ${stamp(head.at)} · ${isSuggestion(head) ? "suggestions" : head.via}`, dim: true }], []);
-    for (const e of entries) {
-      const a = ACTION_MARK[e.action];
-      const exists = store.objects.has(e.target);
-      if (exists) {
-        links.push(e.target);
-        linkLines.push(lines.length);
-      }
-      const summary = store.objects.get(e.target)?.summary;
-      lines.push([
-        { text: `${a.mark} `, color: a.color },
-        { text: e.target, color: exists ? "cyan" : "red" },
-        { text: truncate(summary ? ` — ${summary}` : e.action === "suggest" ? ` ${entrySource(e)}` : "", Math.max(0, width - e.target.length - 2)), dim: true },
-      ]);
+  const entries = row.entries;
+  const head = entries[0]!;
+  if (row.kind === "day") {
+    const date = new Date(head.at).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+    lines.push([{ text: row.label, bold: true, color: "magenta" }, { text: ` ${date} · ${entries.length} changes (${batchSummary(entries)})`, dim: true }], []);
+  } else lines.push([{ text: `${entries.length} changes`, bold: true }, { text: ` ${stamp(head.at)} · ${head.via}`, dim: true }], []);
+  for (const e of entries) {
+    const a = ACTION_MARK[e.action];
+    const exists = store.objects.has(e.target);
+    if (exists) {
+      links.push(e.target);
+      linkLines.push(lines.length);
     }
+    const summary = store.objects.get(e.target)?.summary;
+    const time = row.kind === "day" ? `${clock(e.at)} ` : "";
+    const via = row.kind === "day" ? ` (${e.via})` : "";
+    lines.push([
+      { text: time, dim: true },
+      { text: `${a.mark} `, color: a.color },
+      { text: e.target, color: exists ? "cyan" : "red" },
+      { text: via, dim: true },
+      { text: truncate(summary ? ` — ${summary}` : "", Math.max(0, width - time.length - e.target.length - via.length - 2)), dim: true },
+    ]);
   }
   return { lines, links, linkLines };
 }

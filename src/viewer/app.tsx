@@ -42,9 +42,9 @@ export interface ViewerState {
   filter: string;
   /** Expanded headers in the browse list (`type:<name>`, `wanted:`); all start collapsed. */
   open?: string[];
-  /** Cursor in the activity or search list, expanded activity batches, and the last search. */
+  /** Cursor in the activity or search list, expanded activity days and batches, and the last search. */
   sideKey?: string;
-  batches?: string[];
+  activityOpen?: string[];
   results?: SearchResults;
 }
 
@@ -90,9 +90,9 @@ export function App({ layers, initial, onEdit }: Props) {
   const [filter, setFilter] = useState(initial.filter);
   const [searching, setSearching] = useState(false);
   const [open, setOpen] = useState<Set<string>>(() => new Set(initial.open ?? []));
-  /** Activity and search views: the list cursor, expanded batches, the `?` prompt and its results. */
+  /** Activity and search views: the list cursor, expanded days and batches (all start collapsed), the `?` prompt and its results. */
   const [sideKey, setSideKey] = useState<string | undefined>(initial.sideKey);
-  const [batches, setBatches] = useState<Set<string>>(() => new Set(initial.batches ?? []));
+  const [activityOpen, setActivityOpen] = useState<Set<string>>(() => new Set(initial.activityOpen ?? []));
   const [asking, setAsking] = useState(false);
   const [question, setQuestion] = useState(initial.results?.query ?? "");
   const [results, setResults] = useState<SearchResults | undefined>(initial.results?.status === "done" ? initial.results : undefined);
@@ -168,12 +168,12 @@ export function App({ layers, initial, onEdit }: Props) {
     });
 
   // ── activity and search lists ──
-  const activity = useMemo(() => readActivity(layers, cacheRoot(process.env)), [layers, loadedAt]);
-  const actRows = useMemo(() => activityRows(activity, batches), [activity, batches]);
+  const activity = useMemo(() => readActivity(layers), [layers, loadedAt]);
+  const actRows = useMemo(() => activityRows(activity, activityOpen), [activity, activityOpen]);
   const hits = results?.hits ?? [];
-  /** Selectable keys of the side list (day headers are not). */
+  /** Keys of the side list's rows. */
   const sideKeys = useMemo(
-    () => (view === "activity" ? actRows.filter((r) => r.kind !== "day").map((r) => r.key) : view === "search" ? hits.map((h) => h.key) : []),
+    () => (view === "activity" ? actRows.map((r) => r.key) : view === "search" ? hits.map((h) => h.key) : []),
     [view, actRows, hits],
   );
   const sideIndex = sideKey && sideKeys.includes(sideKey) ? sideKeys.indexOf(sideKey) : sideKeys.length ? 0 : -1;
@@ -271,7 +271,7 @@ export function App({ layers, initial, onEdit }: Props) {
   const edit = () => {
     const obj = pageObject ? store.objects.get(pageObject) : undefined;
     if (!obj) return;
-    onEdit(obj.path, { current, view, history, filter, open: [...open], sideKey: sideSelected, batches: [...batches], results });
+    onEdit(obj.path, { current, view, history, filter, open: [...open], sideKey: sideSelected, activityOpen: [...activityOpen], results });
     exit();
   };
 
@@ -345,20 +345,63 @@ export function App({ layers, initial, onEdit }: Props) {
     if (input === "o" && pageObject && view !== "browse") return follow(pageObject);
     if (key.tab) return setFocus(focus === "list" ? "page" : "list");
 
-    // Activity and search lists: move, expand batches, open the page.
+    // Jump to the top or bottom: of the list, or of the page.
+    if (input === "g" || input === "G" || key.home || key.end) {
+      const end = input === "G" || key.end;
+      if (focus === "page") return setScroll(end ? maxScroll : 0);
+      if (view !== "browse") return moveSide(end ? sideKeys.length : -sideKeys.length);
+      return moveList(end ? keys.length : -keys.length);
+    }
+    // Activity headers (days, batches): expand/collapse like the browse list; all start collapsed.
+    if (view === "activity" && focus === "list" && actRow) {
+      const toggleAct = (key: string, on: boolean) =>
+        setActivityOpen((prev) => {
+          const next = new Set(prev);
+          if (on) next.add(key);
+          else next.delete(key);
+          return next;
+        });
+      const header = actRow.kind === "entry" ? undefined : actRow;
+      if (header && (key.return || key.rightArrow || input === "l" || input === " ")) {
+        if (!header.open) return toggleAct(header.key, true);
+        if (key.rightArrow || input === "l") return moveSide(1);
+        return toggleAct(header.key, false);
+      }
+      /** The batch an entry is in, or the day a row is under. */
+      const parent = () => {
+        const at = actRows.indexOf(actRow);
+        const nested = actRow.kind === "entry" && actRow.nested;
+        for (let i = at - 1; i >= 0; i--) if (actRows[i]!.kind === (nested ? "batch" : "day")) return actRows[i]!.key;
+        return undefined;
+      };
+      if (key.leftArrow || input === "h") {
+        if (header?.open) return toggleAct(header.key, false);
+        const up = parent();
+        if (up) moveSide(sideKeys.indexOf(up) - sideIndex);
+        return;
+      }
+      if (input === "x") {
+        const day = actRow.kind === "day" ? actRow.key : actRows.slice(0, actRows.indexOf(actRow)).findLast((r) => r.kind === "day")?.key;
+        setActivityOpen(new Set());
+        if (day) setSideKey(day);
+        return;
+      }
+      if (input === "X") return setActivityOpen((prev) => new Set([...prev, ...actRows.filter((r) => r.kind === "day").map((r) => r.key)]));
+      if (input === "[" || input === "]") {
+        const days = actRows.flatMap((r, i) => (r.kind === "day" ? [i] : []));
+        const target = input === "]" ? days.find((i) => i > sideIndex) : [...days].reverse().find((i) => i < sideIndex);
+        if (target !== undefined) moveSide(target - sideIndex);
+        return;
+      }
+    }
+
+    // Activity and search lists: move, open the page.
     if (view !== "browse" && focus === "list") {
       if (key.downArrow || input === "j") moveSide(1);
       else if (key.upArrow || input === "k") moveSide(-1);
       else if (key.pageDown || input === " " || (key.ctrl && input === "d")) moveSide(innerHeight - 2);
       else if (key.pageUp || (key.ctrl && input === "u")) moveSide(-(innerHeight - 2));
-      else if (actRow?.kind === "batch" && (key.return || key.rightArrow || input === "l" || ((key.leftArrow || input === "h") && actRow.open))) {
-        setBatches((prev) => {
-          const next = new Set(prev);
-          if (next.has(actRow.key)) next.delete(actRow.key);
-          else next.add(actRow.key);
-          return next;
-        });
-      } else if (key.return || key.rightArrow || input === "l") setFocus("page");
+      else if (key.return || key.rightArrow || input === "l") setFocus("page");
       else if (key.escape) switchTo("browse");
       return;
     }
@@ -469,18 +512,22 @@ export function App({ layers, initial, onEdit }: Props) {
     : narrow
       ? view === "browse"
         ? focus === "list"
-          ? "↑↓ · ⏎→ open · ← close · x/X all · [ ] · 2 activity · / ?"
-          : "↑↓␣ scroll · n/N link · ⏎ go · ← list · e"
+          ? "↑↓ g/G · ⏎→ open · ← close · x/X all · [ ] · 2 activity · / ?"
+          : "↑↓␣ g/G scroll · n/N link · ⏎ go · ← list · e"
         : focus === "list"
-          ? "↑↓ · ⏎→ page · o open · 1 browse · ?"
-          : "↑↓␣ scroll · n/N link · ⏎ go · ← list · o · e"
+          ? view === "activity"
+            ? "↑↓ g/G · ⏎→ open · ← close · x/X all · [ ] · o · 1 · ?"
+            : "↑↓ g/G · ⏎→ page · o open · 1 browse · ?"
+          : "↑↓␣ g/G scroll · n/N link · ⏎ go · ← list · o · e"
       : view === "browse"
         ? focus === "list"
-          ? "↑↓ move  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next type  tab page  2 activity  / filter  ? search  b back  e edit  q"
-          : "↑↓/j/k/space scroll  n/N next/prev link  enter follow  ←/esc list  2 activity  ? search  b back  e edit  q quit"
+          ? "↑↓ move  g/G top/bottom  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next type  tab page  2 activity  / filter  ? search  b back  e edit  q"
+          : "↑↓/j/k/space scroll  g/G top/bottom  n/N next/prev link  enter follow  ←/esc list  2 activity  ? search  b back  e edit  q quit"
         : focus === "list"
-          ? `↑↓ move  ⏎/→ ${view === "activity" ? "expand batch / page" : "page"}  o open in browse  tab page  1 browse  ${view === "activity" ? "" : "2 activity  "}? search  e edit  q`
-          : "↑↓/j/k/space scroll  n/N next/prev link  enter follow  ←/esc list  o open in browse  e edit  q quit";
+          ? view === "activity"
+            ? "↑↓ move  g/G top/bottom  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next day  o open in browse  tab page  1 browse  ? search  e edit  q"
+            : "↑↓ move  g/G top/bottom  ⏎/→ page  o open in browse  tab page  1 browse  2 activity  ? search  e edit  q"
+          : "↑↓/j/k/space scroll  g/G top/bottom  n/N next/prev link  enter follow  ←/esc list  o open in browse  e edit  q quit";
   const footer = asking ? (
     <Text wrap="truncate">
       <Text color="cyan">? </Text>
