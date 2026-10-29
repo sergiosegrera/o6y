@@ -86,7 +86,7 @@ See SPEC.md for the models and the rest of the settings.
 `o6y` (or `o6y view`) in a terminal opens a live viewer of your stores, built with Ink. To use the command outside pi, install it with Bun or npm:
 
 ```bash
-bun add -g github:sergiosegrera/o6y#v0.6.0     # or: npm i -g github:sergiosegrera/o6y#v0.6.0
+bun add -g github:sergiosegrera/o6y#v0.7.0     # or: npm i -g github:sergiosegrera/o6y#v0.7.0
 o6y                                             # viewer; o6y view --tree note/payments-api
 ```
 

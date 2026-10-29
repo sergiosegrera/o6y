@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.7.0
 
 - **Semantic search (opt-in):** `semantic: { enabled: true }` in a root schema plus `CO_API_KEY` turns on Cohere embeddings and rerank.
   - On each user message, objects scoring at least `threshold` are suggested in an `<o6y-relevant>` message, shown in pi as a collapsible `◆ o6y N relevant: …` line. Each object is suggested once per session, pinned objects never are, and suggestions give up after 2.5 s rather than delay the turn.
