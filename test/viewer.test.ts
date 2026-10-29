@@ -108,20 +108,13 @@ test("parseLog reads log.md lines and skips anything else", () => {
   ]);
 });
 
-test("readActivity merges every layer's log with the suggestion log, newest first", () => {
+test("readActivity merges every layer's log.md, newest first", () => {
   put("log.md", "- 2026-10-28T09:00:00Z create note/a (write)\n- 2026-10-29T10:00:00Z update note/b (edit)\n");
-  const cache = join(tmp, "cache");
-  mkdirSync(cache, { recursive: true });
-  writeFileSync(
-    join(cache, "suggestions.jsonl"),
-    [
-      JSON.stringify({ type: "suggest", t: "2026-10-29T11:00:00Z", session: "s1", turn: 1, hits: [{ id: "note/c", score: 0.71, similarity: 0.4 }] }),
-      JSON.stringify({ type: "use", t: "2026-10-29T11:01:00Z", session: "s1", turn: 1, id: "note/c", via: "read" }),
-    ].join("\n"),
-  );
-  const entries = readActivity(makeLayers(root, join(tmp, "proj")), cache);
-  expect(entries.map((e) => `${e.action} ${e.target}`)).toEqual(["open note/c", "suggest note/c", "update note/b", "create note/a"]);
-  expect(entries[1]!.score).toBe(0.71);
+  const proj = join(tmp, "proj");
+  mkdirSync(proj, { recursive: true });
+  writeFileSync(join(proj, "log.md"), "- 2026-10-29T12:00:00Z create note/p (o6y new)\n");
+  const entries = readActivity(makeLayers(root, proj));
+  expect(entries.map((e) => `${e.action} ${e.target} ${e.layer}`)).toEqual(["create note/p project", "update note/b global", "create note/a global"]);
   expect(readActivity(makeLayers(join(tmp, "nowhere")))).toEqual([]);
 });
 
@@ -155,14 +148,12 @@ test("activity lines and pages", () => {
   const entries = [
     { at: Date.parse("2026-10-29T15:04:00"), action: "update" as const, target: "note/a", via: "edit", layer: "global" },
     { at: Date.parse("2026-10-29T15:03:00"), action: "delete" as const, target: "note/gone", via: "o6y rm", layer: "global" },
-    { at: Date.parse("2026-10-29T15:02:00"), action: "suggest" as const, target: "note/c", via: "s1", layer: "", score: 0.71 },
   ];
   const rows = activityRows(entries, new Set(), "", now);
-  const [, a, gone, suggested] = rows;
+  const [, a, gone] = rows;
   expect(plain(activityLine(store, a!, 40, false))).toMatch(/^15:04 ~ note\/a +edit$/);
   expect(plain(activityLine(store, gone!, 40, false))).toMatch(/^15:03 − note\/gone +o6y rm$/);
-  expect(plain(activityLine(store, suggested!, 40, false))).toMatch(/^15:02 ◆ note\/c +0\.71$/);
-  for (const r of [a!, gone!, suggested!]) expect(plain(activityLine(store, r, 40, false))).toHaveLength(40);
+  for (const r of [a!, gone!]) expect(plain(activityLine(store, r, 40, false))).toHaveLength(40);
   expect(activityLine(store, gone!, 40, false)[2]!.color).toBe("red");
 
   // An entry's page is the object's page under a line saying what happened; links still work.

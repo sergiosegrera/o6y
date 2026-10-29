@@ -6,7 +6,6 @@ import {
   displayPath,
   embedderFor,
   neighbors,
-  readSuggestionLog,
   search,
   semanticUnavailable,
   storeSignature,
@@ -322,29 +321,16 @@ function parseLog(text, layer) {
   }
   return out;
 }
-function readActivity(layers, cache) {
+function readActivity(layers) {
   const entries = [];
   for (const layer of layers) {
     try {
       entries.push(...parseLog(readFileSync(join(layer.root, LOG_FILE), "utf8"), layer.name));
     } catch {}
   }
-  if (cache) {
-    for (const r of readSuggestionLog(cache)) {
-      const at = Date.parse(r.t);
-      if (Number.isNaN(at))
-        continue;
-      if (r.type === "suggest")
-        for (const h of r.hits)
-          entries.push({ at, action: "suggest", target: h.id, via: r.session, layer: "", score: h.score });
-      else
-        entries.push({ at, action: "open", target: r.id, via: r.via, layer: "" });
-    }
-  }
   return entries.sort((a, b) => b.at - a.at);
 }
 var BATCH_MIN = 3;
-var isSuggestion = (e) => e.action === "suggest" || e.action === "open";
 function dayLabel(at, now) {
   const d = new Date(at);
   const days = Math.round((new Date(now).setHours(0, 0, 0, 0) - new Date(at).setHours(0, 0, 0, 0)) / 86400000);
@@ -361,7 +347,7 @@ function activityRows(entries, open, query = "", now = new Date) {
   for (const e of shown) {
     const g = groups[groups.length - 1];
     const head = g?.[0];
-    if (head && head.at === e.at && head.via === e.via && isSuggestion(head) === isSuggestion(e))
+    if (head && head.at === e.at && head.via === e.via)
       g.push(e);
     else
       groups.push([e]);
@@ -392,7 +378,7 @@ function activityRows(entries, open, query = "", now = new Date) {
         rows.push(entryRow(e, false));
       continue;
     }
-    const key = unique(`batch:${g[0].at}|${g[0].via}|${isSuggestion(g[0]) ? "s" : "c"}`);
+    const key = unique(`batch:${g[0].at}|${g[0].via}`);
     const isOpen = open.has(key);
     rows.push({ kind: "batch", key, entries: g, open: isOpen });
     if (isOpen)
@@ -404,12 +390,9 @@ function activityRows(entries, open, query = "", now = new Date) {
 var ACTION_MARK = {
   create: { mark: "+", color: "green", verb: "created" },
   update: { mark: "~", color: "yellow", verb: "updated" },
-  delete: { mark: "−", color: "red", verb: "deleted" },
-  suggest: { mark: "◆", color: "cyan", verb: "suggested" },
-  open: { mark: "↗", color: "blue", verb: "opened" }
+  delete: { mark: "−", color: "red", verb: "deleted" }
 };
 var clock = (at) => new Date(at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
-var entrySource = (e) => e.action === "suggest" ? (e.score ?? 0).toFixed(2) : e.via;
 function batchSummary(entries) {
   const counts = new Map;
   for (const e of entries)
@@ -422,9 +405,8 @@ function activityLine(store, row, width, selected, changed) {
   }
   if (row.kind === "batch") {
     const head = row.entries[0];
-    const what = isSuggestion(head) ? `${row.entries.length} suggested` : `${row.entries.length} changes`;
-    const left = `${clock(head.at)} ${row.open ? "▾" : "▸"} ${what} `;
-    const right = ` ${batchSummary(row.entries)} · ${isSuggestion(head) ? "suggestions" : head.via}`;
+    const left = `${clock(head.at)} ${row.open ? "▾" : "▸"} ${row.entries.length} changes `;
+    const right = ` ${batchSummary(row.entries)} · ${head.via}`;
     return [
       { text: left, bold: selected, inverse: selected, color: selected ? "cyan" : undefined },
       { text: truncate(right, Math.max(0, width - left.length)), dim: true }
@@ -434,7 +416,7 @@ function activityLine(store, row, width, selected, changed) {
   const a = ACTION_MARK[e.action];
   const time = row.nested ? "   " : clock(e.at);
   const missing = !e.target.includes(" ") && e.target.includes("/") && !store.objects.has(e.target);
-  const source = ` ${entrySource(e)}`;
+  const source = ` ${e.via}`;
   const mark = changed?.has(e.target) ? " •" : "";
   const nameWidth = Math.max(4, width - time.length - 3 - mark.length - (width > 34 ? source.length : 0));
   const segs = [
@@ -464,7 +446,7 @@ function renderActivityPage(store, row, width, changed) {
   const stamp = (at) => new Date(at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "medium" });
   const describeEntry = (e) => {
     const a = ACTION_MARK[e.action];
-    return [{ text: `${a.mark} ${a.verb}`, color: a.color }, { text: ` ${stamp(e.at)} · ${e.action === "suggest" ? `score ${entrySource(e)}` : e.action === "open" ? `via ${e.via}` : e.via}${e.layer ? ` · ${e.layer}` : ""}`, dim: true }];
+    return [{ text: `${a.mark} ${a.verb}`, color: a.color }, { text: ` ${stamp(e.at)} · ${e.via} · ${e.layer}`, dim: true }];
   };
   if (row.kind === "entry") {
     const { object, type } = activityTarget(store, row);
@@ -481,7 +463,7 @@ function renderActivityPage(store, row, width, changed) {
     lines.push([{ text: row.label, bold: true, color: "magenta" }, { text: ` ${row.count} events`, dim: true }]);
   else {
     const head = entries[0];
-    lines.push([{ text: isSuggestion(head) ? `${entries.length} suggestions` : `${entries.length} changes`, bold: true }, { text: ` ${stamp(head.at)} · ${isSuggestion(head) ? "suggestions" : head.via}`, dim: true }], []);
+    lines.push([{ text: `${entries.length} changes`, bold: true }, { text: ` ${stamp(head.at)} · ${head.via}`, dim: true }], []);
     for (const e of entries) {
       const a = ACTION_MARK[e.action];
       const exists = store.objects.has(e.target);
@@ -493,7 +475,7 @@ function renderActivityPage(store, row, width, changed) {
       lines.push([
         { text: `${a.mark} `, color: a.color },
         { text: e.target, color: exists ? "cyan" : "red" },
-        { text: truncate(summary ? ` — ${summary}` : e.action === "suggest" ? ` ${entrySource(e)}` : "", Math.max(0, width - e.target.length - 2)), dim: true }
+        { text: truncate(summary ? ` — ${summary}` : "", Math.max(0, width - e.target.length - 2)), dim: true }
       ]);
     }
   }
@@ -644,7 +626,7 @@ function App({ layers, initial, onEdit }) {
       next.delete(key);
     return next;
   });
-  const activity = useMemo(() => readActivity(layers, cacheRoot(process.env)), [layers, loadedAt]);
+  const activity = useMemo(() => readActivity(layers), [layers, loadedAt]);
   const actRows = useMemo(() => activityRows(activity, batches), [activity, batches]);
   const hits = results?.hits ?? [];
   const sideKeys = useMemo(() => view === "activity" ? actRows.filter((r) => r.kind !== "day").map((r) => r.key) : view === "search" ? hits.map((h) => h.key) : [], [view, actRows, hits]);
@@ -845,6 +827,21 @@ function App({ layers, initial, onEdit }) {
       return follow(pageObject);
     if (key.tab)
       return setFocus(focus === "list" ? "page" : "list");
+    if (input === "g" || input === "G" || key.home || key.end) {
+      const end = input === "G" || key.end;
+      if (focus === "page")
+        return setScroll(end ? maxScroll : 0);
+      if (view !== "browse")
+        return moveSide(end ? sideKeys.length : -sideKeys.length);
+      return moveList(end ? keys.length : -keys.length);
+    }
+    if (view === "activity" && focus === "list" && (input === "[" || input === "]")) {
+      const starts = actRows.flatMap((r, i) => r.kind === "day" && actRows[i + 1] ? [sideKeys.indexOf(actRows[i + 1].key)] : []);
+      const target = input === "]" ? starts.find((i) => i > sideIndex) : [...starts].reverse().find((i) => i < sideIndex);
+      if (target !== undefined)
+        moveSide(target - sideIndex);
+      return;
+    }
     if (view !== "browse" && focus === "list") {
       if (key.downArrow || input === "j")
         moveSide(1);
@@ -1077,7 +1074,7 @@ function App({ layers, initial, onEdit }) {
       })
     ]
   });
-  const footerText = searching ? null : narrow ? view === "browse" ? focus === "list" ? "↑↓ · ⏎→ open · ← close · x/X all · [ ] · 2 activity · / ?" : "↑↓␣ scroll · n/N link · ⏎ go · ← list · e" : focus === "list" ? "↑↓ · ⏎→ page · o open · 1 browse · ?" : "↑↓␣ scroll · n/N link · ⏎ go · ← list · o · e" : view === "browse" ? focus === "list" ? "↑↓ move  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next type  tab page  2 activity  / filter  ? search  b back  e edit  q" : "↑↓/j/k/space scroll  n/N next/prev link  enter follow  ←/esc list  2 activity  ? search  b back  e edit  q quit" : focus === "list" ? `↑↓ move  ⏎/→ ${view === "activity" ? "expand batch / page" : "page"}  o open in browse  tab page  1 browse  ${view === "activity" ? "" : "2 activity  "}? search  e edit  q` : "↑↓/j/k/space scroll  n/N next/prev link  enter follow  ←/esc list  o open in browse  e edit  q quit";
+  const footerText = searching ? null : narrow ? view === "browse" ? focus === "list" ? "↑↓ g/G · ⏎→ open · ← close · x/X all · [ ] · 2 activity · / ?" : "↑↓␣ g/G scroll · n/N link · ⏎ go · ← list · e" : focus === "list" ? `↑↓ g/G${view === "activity" ? " · [ ] day" : ""} · ⏎→ page · o open · 1 browse · ?` : "↑↓␣ g/G scroll · n/N link · ⏎ go · ← list · o · e" : view === "browse" ? focus === "list" ? "↑↓ move  g/G top/bottom  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next type  tab page  2 activity  / filter  ? search  b back  e edit  q" : "↑↓/j/k/space scroll  g/G top/bottom  n/N next/prev link  enter follow  ←/esc list  2 activity  ? search  b back  e edit  q quit" : focus === "list" ? `↑↓ move  g/G top/bottom  ${view === "activity" ? "[ ] prev/next day  ⏎/→ expand batch / page" : "⏎/→ page"}  o open in browse  tab page  1 browse  ${view === "activity" ? "" : "2 activity  "}? search  e edit  q` : "↑↓/j/k/space scroll  g/G top/bottom  n/N next/prev link  enter follow  ←/esc list  o open in browse  e edit  q quit";
   const footer = asking ? /* @__PURE__ */ jsxs(Text, {
     wrap: "truncate",
     children: [

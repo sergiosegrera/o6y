@@ -87,16 +87,16 @@ See SPEC.md for the models and the rest of the settings.
 `o6y` (or `o6y view`) in a terminal opens a live viewer of your stores, built with Ink. To use the command outside pi, install it with Bun or npm:
 
 ```bash
-bun add -g github:sergiosegrera/o6y#v0.8.0     # or: npm i -g github:sergiosegrera/o6y#v0.8.0
+bun add -g github:sergiosegrera/o6y#v0.8.1     # or: npm i -g github:sergiosegrera/o6y#v0.8.1
 o6y                                             # viewer; o6y view --activity opens on the timeline
 ```
 
 - **Browse** (`1`): types and objects on the left; the selected page on the right, with its fields, body, links and backlinks.
-- **Activity** (`2` / `a`): a timeline of the store, newest first, by day. It shows every create (`+`), update (`~`) and delete (`−`) from `log.md`, with what made it (`write`, `edit`, `bash`, `o6y mv`…). With semantic search on, it also shows the objects suggested to the agent (`◆`, with their score) and the ones it then opened (`↗`). Changes made together, like a bash migration, collapse into one row that `enter` expands. The selected object's page is on the right, under a line saying what happened. `o` opens it in browse.
+- **Activity** (`2` / `a`): a timeline of the store, newest first, by day. It shows every create (`+`), update (`~`) and delete (`−`) from `log.md`, with what made it (`write`, `edit`, `bash`, `o6y mv`…). Changes made together, like a bash migration, collapse into one row that `enter` expands. `[`/`]` jump to the previous or next day. The selected object's page is on the right, under a line saying what happened. `o` opens it in browse.
 - **Search** (`?`, with semantic search on): type a question and press `enter` to rank objects by meaning. A line marks the threshold, so you see what the agent would and wouldn't be suggested for that message. The results stay under `3`.
 - **Hot reload**: changes to the store, whether made by the agent or by you, show up immediately. Changed objects are marked `•`, and the header shows the error and warning counts.
 - **Narrow panes** (e.g. a cmux or tmux side pane): below 80 columns, every view shows one pane at a time (`enter` opens the page, `←` goes back to the list).
-- **Keys**: on a page, `j`/`k` scroll and `n`/`N` pick a link; `enter` follows a link, `b` goes back, `/` filters the browse list by id, summary and body, `e` opens the object in `$EDITOR`, and `q` quits.
+- **Keys**: `g`/`G` (or `Home`/`End`) jump to the top or bottom of a list or page. On a page, `j`/`k` scroll and `n`/`N` pick a link; `enter` follows a link, `b` goes back, `/` filters the browse list by id, summary and body, `e` opens the object in `$EDITOR`, and `q` quits.
 
 Edits made in `$EDITOR` are not validated, because validation hooks only into the agent's tools. The viewer shows any errors they introduce.
 
