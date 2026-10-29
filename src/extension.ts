@@ -20,7 +20,16 @@ import { workPaths } from "./core/context.ts";
 import { ensureFormat } from "./core/format.ts";
 import { lint } from "./core/ops.ts";
 import { renderObjectFooter, renderPromptSection, renderRootIndex, renderTypeIndex } from "./core/render.ts";
-import { cacheRoot, embedderFor, formatRelevant, relevantTo, semanticUnavailable, syncIndex, worthSuggesting } from "./core/semantic.ts";
+import {
+  appendSuggestionLog,
+  cacheRoot,
+  embedderFor,
+  formatRelevant,
+  relevantTo,
+  semanticUnavailable,
+  syncIndex,
+  worthSuggesting,
+} from "./core/semantic.ts";
 import {
   blockingIssues,
   canonicalPath,
@@ -85,7 +94,10 @@ const SCHEMA_MIGRATION_HINT =
 
 /** How long a user message may wait for relevant-object suggestions before going without. */
 const SUGGEST_TIMEOUT_MS = 2500;
+const round = (n: number) => Math.round(n * 1000) / 1000;
 const RELEVANT_MESSAGE = "o6y-relevant";
+/** Object ids a bash command opens: `o6y show|links|backlinks <id>`, or a `<type>/<slug>.md` path. */
+const BASH_USE_RE = /\bo6y\s+(?:show|links|backlinks)\s+([a-z0-9-]+\/[a-z0-9-]+)|\b([a-z0-9-]+\/[a-z0-9-]+)\.md\b/g;
 
 interface RelevantDetails {
   hits: { id: string; summary: string; score: number }[];
@@ -115,8 +127,13 @@ export default function o6y(pi: ExtensionAPI) {
   const pending = new Map<string, Pending>();
   /** Store as of the last prompt refresh. */
   let current: Store | undefined;
-  /** Objects already suggested this session; each is suggested once. */
-  const suggested = new Set<string>();
+  /** Objects suggested since the session started or was compacted (id -> turn); each is suggested once. */
+  const suggested = new Map<string, number>();
+  /** Suggested objects the agent has since opened. */
+  const used = new Set<string>();
+  /** User messages so far this session, and the session's id, for the suggestion log. */
+  let turn = 0;
+  let sessionId = "";
   /** Store fingerprint the search index was last synced at, and the sync in flight. */
   let indexedSignature = "";
   let indexing: Promise<void> | undefined;
@@ -220,6 +237,15 @@ export default function o6y(pi: ExtensionAPI) {
   // --- After a tool runs: serve virtual reads, validate edits and bash, log, report. ---
 
   pi.on("tool_result", async (event, ctx) => {
+    if (suggested.size && !event.isError) {
+      const input = event.input as Record<string, unknown>;
+      if (event.toolName === "read" && typeof input.path === "string") {
+        const info = classifyPath(layers, resolveToolPath(input.path, ctx.cwd));
+        if (info?.kind === "object") noteUse(info.id, "read");
+      } else if (event.toolName === "bash" && typeof input.command === "string") {
+        for (const m of input.command.matchAll(BASH_USE_RE)) noteUse((m[1] ?? m[2])!, "bash");
+      }
+    }
     if (event.toolName === "read") {
       if (!layers.length) configure(ctx.cwd);
       const input = event.input as Record<string, unknown>;
@@ -330,17 +356,32 @@ export default function o6y(pi: ExtensionAPI) {
     if (!embedder || !worthSuggesting(prompt)) return undefined;
     try {
       const hits = await relevantTo(store, embedder, cacheRoot(process.env), prompt, {
-        exclude: suggested,
+        exclude: new Set(suggested.keys()),
         signal: AbortSignal.timeout(SUGGEST_TIMEOUT_MS),
       });
       if (!hits.length) return undefined;
-      for (const h of hits) suggested.add(h.obj.id);
+      for (const h of hits) suggested.set(h.obj.id, turn);
+      appendSuggestionLog(cacheRoot(process.env), {
+        type: "suggest",
+        t: new Date().toISOString(),
+        session: sessionId,
+        turn,
+        ...(store.semantic.logPrompts ? { prompt } : {}),
+        hits: hits.map((h) => ({ id: h.obj.id, score: round(h.score), similarity: round(h.similarity) })),
+      });
       const details: RelevantDetails = { hits: hits.map((h) => ({ id: h.obj.id, summary: h.obj.summary, score: h.score })) };
       return { customType: RELEVANT_MESSAGE, content: formatRelevant(hits), display: true, details };
     } catch {
       // Suggestions are best effort: a slow or failing API never holds up the turn.
       return undefined;
     }
+  }
+
+  /** Logs the first time the agent opens an object it was suggested. */
+  function noteUse(id: string, via: string): void {
+    if (!suggested.has(id) || used.has(id)) return;
+    used.add(id);
+    appendSuggestionLog(cacheRoot(process.env), { type: "use", t: new Date().toISOString(), session: sessionId, turn, id, via });
   }
 
   // --- Commands ---
@@ -382,6 +423,9 @@ export default function o6y(pi: ExtensionAPI) {
       }
     }
     suggested.clear();
+    used.clear();
+    turn = 0;
+    sessionId = ctx.sessionManager.getSessionId();
     const store = refreshPrompt();
     refreshIndex(store, ctx);
     const errors = store.errors().length;
@@ -395,8 +439,15 @@ export default function o6y(pi: ExtensionAPI) {
     if (!promptSection || storeSignature(layers) !== promptSignature) refreshPrompt();
     event.systemPromptOptions.sections.o6y = promptSection;
     refreshIndex(current!, ctx);
+    turn++;
     const message = await suggest(event.prompt, current!);
     return message ? { message } : undefined;
+  });
+
+  // Compaction may summarize earlier suggestions away, so objects can be suggested again.
+  pi.on("session_compact", async () => {
+    suggested.clear();
+    used.clear();
   });
 
   pi.on("session_shutdown", async () => {
