@@ -73,7 +73,7 @@ pinnedBudget: 2500     # max chars (summary + body) of all pinned objects combin
 Guidance for the whole store (shown in the system prompt).
 ```
 
-The project store's settings override the global store's.
+The project store's settings override the global store's. An optional `semantic:` block turns on semantic search (see the `o6y` command); only the user should turn it on, since it sends the store and their messages to Cohere.
 
 ## Objects
 
@@ -156,6 +156,7 @@ Run it with bash. Every write command validates the whole change before writing 
 | Command | Does |
 |---|---|
 | `o6y query [text] [--type T] [--where f=v]… [--links-to ID] [--linked-from ID] [--json]` | find objects (list and link fields match any element) |
+| `o6y search <question> [--type T] [--limit N] [--json]` | find objects by meaning, best first with a 0–1 score; use it for questions ("who reviews ledger changes?"), `query` for exact filters. Falls back to word match when semantic search is off |
 | `o6y show <id>` · `o6y links <id>` · `o6y backlinks <id>` | an object with backlinks; outgoing or incoming links with the field they use |
 | `o6y index [type]` | the generated catalog |
 | `o6y lint` | errors, warnings, wanted pages, orphans, undeclared fields (exit 1 on errors). Run after bulk changes |
@@ -166,6 +167,8 @@ Run it with bash. Every write command validates the whole change before writing 
 | `o6y set <id> f=v… [--unset f]` | set fields (values are YAML: `true`, `3`, `[a, b]`) |
 | `o6y mv` · `o6y merge` · `o6y rm` · `o6y field` · `o6y type rename` | see Recipes |
 | `o6y check <id\|path> [--file F]` | validate a draft (stdin or file) without writing it |
+
+When semantic search is on, a user message can arrive with an `<o6y-relevant>` block listing objects that look relevant to it. Read the ones that apply before acting; ignore the rest. Each object is suggested once per session.
 
 `o6y help <command>` shows a command's options. `/o6y` (a user command in pi) shows status and refreshes the memory section of the system prompt, which is otherwise computed once per session.
 

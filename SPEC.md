@@ -146,6 +146,29 @@ The section is computed at session start and rebuilt before a prompt whenever th
 
 Pinned objects are listed by name only, since their full content is already above.
 
+## Semantic search (opt-in)
+
+Off by default, because it sends every object and every user message to Cohere. Turn it on in a root schema and set `CO_API_KEY` (or `COHERE_API_KEY`; `CO_API_URL` overrides the endpoint):
+
+```md
+---
+semantic:
+  enabled: true
+  embedModel: embed-v5.0-fast     # default
+  rerankModel: rerank-v5.0-fast   # default
+  threshold: 0.35                 # rerank score (0–1) a suggestion needs
+  maxRelevant: 5                  # max suggestions per user message
+  candidates: 40                  # nearest objects by embedding sent to the reranker
+---
+```
+
+As with the other settings, the project layer's values override the global layer's.
+
+- **Index:** one vector per object, embedded (`search_document`) from its id, type description, summary, fields and body. Vectors live outside the store, in `$O6Y_CACHE` (default `$XDG_CACHE_HOME/o6y` or `~/.cache/o6y`), one directory per layer: `vectors.f32` (unit-length float32 rows) and `index.json` (model, dimension, ids, content hashes). Only objects whose text changed are re-embedded; a model change re-embeds everything. The cache can always be deleted and rebuilt.
+- **Search:** the query is embedded (`search_query`), every object is scored by cosine similarity (brute force), and the top `candidates` are reranked. Scores are rerank relevance, 0–1.
+- **Relevant objects:** on each user message (not slash commands or replies under 3 words), the extension runs the search and, when objects score at least `threshold`, adds a `<o6y-relevant>` message after the user's, listing them as `- [[id]] (score) — summary`. Pinned objects and objects already suggested this session are left out. Suggestions give up after 2.5 s, and any error means no suggestion, never a failed turn. The extension re-embeds changed objects in the background (at session start and whenever the store changed); a suggestion uses the index as it is. In pi's UI the message renders as one line (`◆ o6y 2 relevant: …`), with scores and summaries when expanded; the footer shows `o6y: indexing memory…` while the index syncs.
+- **CLI:** `o6y search <question>` syncs the index, then searches (`--no-rerank` ranks by similarity alone). Without the opt-in or a key it falls back to word matching, with a note. `o6y reindex [--full]` syncs the index explicitly.
+
 ## Manual (skill)
 
 `skills/o6y/SKILL.md` is the full manual: layout, schema syntax, link rules, layers, validation, migration recipes and what to record. The extension registers it through `resources_discover`, so only its description takes prompt space. The agent loads it on demand, or the user can force it with `/skill:o6y`.
@@ -154,8 +177,8 @@ Pinned objects are listed by name only, since their full content is already abov
 
 - `log.md` is appended automatically for every create, update and delete, including schema changes and bash migrations.
 - `/o6y-lint` and `o6y lint` report invalid objects, warnings, wanted pages, orphans and undeclared fields.
-- o6y registers no tools. The `o6y` command (`src/cli`, bundled to `dist/` so it runs on plain Node) does queries and multi-file maintenance: `query`, `show`, `links`, `backlinks`, `index`, `lint`, `stats`, `log`, `prompt`, `export`, `new`, `set`, `mv`, `merge`, `rm`, `field add|rename|drop`, `type rename`, `check` and `view`. The extension puts `bin/o6y` on the agent's PATH, pointing it at the Node that runs pi and at the stores in use (`O6Y_HOME`, `O6Y_PROJECT`), so nothing has to be installed. Write commands build the full change in memory, validate it against the whole store (the same rules as a write) and only then write, and they log with the command name. When one runs inside a bash call, the bash hook doesn't log those files again.
-- `/o6y` shows store status and refreshes the prompt section.
+- o6y registers no tools. The `o6y` command (`src/cli`, bundled to `dist/` so it runs on plain Node) does queries and multi-file maintenance: `query`, `show`, `links`, `backlinks`, `index`, `lint`, `stats`, `log`, `prompt`, `export`, `new`, `set`, `mv`, `merge`, `rm`, `field add|rename|drop`, `type rename`, `check`, `search`, `reindex` and `view`. The extension puts `bin/o6y` on the agent's PATH, pointing it at the Node that runs pi and at the stores in use (`O6Y_HOME`, `O6Y_PROJECT`), so nothing has to be installed. Write commands build the full change in memory, validate it against the whole store (the same rules as a write) and only then write, and they log with the command name. When one runs inside a bash call, the bash hook doesn't log those files again.
+- `/o6y` shows store status (including whether semantic search is on) and refreshes the prompt section.
 - Four minimal starter types are seeded into an empty global store:
   - `person` (role, team; optional `## Review notes`)
   - `preference` (scope)

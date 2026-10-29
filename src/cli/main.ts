@@ -12,6 +12,7 @@ import { editFrontmatter, parseValue, Plan, renameKey, retargetLinks, splitDoc }
 import { parseId } from "../core/links.ts";
 import { lint, neighbors, query, type QueryParams } from "../core/ops.ts";
 import { buildPromptSection, displayPath, renderObjectFooter, renderRootIndex, renderTypeIndex } from "../core/render.ts";
+import { cacheRoot, embedderFor, type Hit, search, semanticUnavailable, syncIndex } from "../core/semantic.ts";
 import {
   canonicalPath,
   classifyPath,
@@ -34,6 +35,8 @@ export interface Io {
   /** Reads all of stdin, or undefined when it's a terminal. */
   stdin: () => string | undefined;
   isTTY: boolean;
+  /** For tests: stands in for the network in `search` and `reindex`. */
+  fetch?: typeof fetch;
 }
 
 class UsageError extends Error {}
@@ -140,6 +143,22 @@ function editSchema(plan: Plan, path: string, fn: Parameters<typeof editFrontmat
   plan.write(path, editFrontmatter(plan.read(path) ?? "", fn));
 }
 
+const round = (n: number) => Math.round(n * 1000) / 1000;
+
+/** Fallback ranking without embeddings: the share of the question's words found in each object. */
+function wordMatch(store: Store, question: string, type: string | undefined, limit: number): Hit[] {
+  const words = [...new Set(question.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [])];
+  if (!words.length) return [];
+  const hits: Hit[] = [];
+  for (const obj of store.objects.values()) {
+    if (type && obj.type !== type) continue;
+    const text = `${obj.id} ${obj.summary} ${obj.body}`.toLowerCase();
+    const score = words.filter((w) => text.includes(w)).length / words.length;
+    if (score > 0) hits.push({ obj, score, similarity: score });
+  }
+  return hits.sort((a, b) => b.score - a.score || a.obj.id.localeCompare(b.obj.id)).slice(0, limit);
+}
+
 // ── commands ─────────────────────────────────────────────────────────────
 
 const COMMANDS: Record<string, Command> = {
@@ -171,6 +190,47 @@ const COMMANDS: Record<string, Command> = {
       else {
         ctx.out(results.map((r) => `- [[${r.id}]] — ${r.summary}  (${displayPath(r.path)}; ${store.backlinksOf(r.id).length} backlinks)`).join("\n"));
       }
+      return 0;
+    },
+  },
+
+  search: {
+    usage: "o6y search <question> [--type T] [--limit N] [--no-rerank] [--json]",
+    summary: "find objects by meaning (Cohere embeddings + rerank; word match when semantic search is off)",
+    options: { type: { type: "string" }, limit: { type: "string" }, "no-rerank": { type: "boolean" }, ...JSON_OPT },
+    async run(ctx, args, o) {
+      const question = args.join(" ").trim();
+      if (!question) throw new UsageError("give a question to search for");
+      const limit = o.limit ? Number(o.limit) : 10;
+      const store = ctx.load();
+      const embedder = embedderFor(store, ctx.env, ctx.fetch);
+      let hits: Hit[];
+      if (!embedder) {
+        ctx.err(`o6y search: ${semanticUnavailable(store, ctx.env)}; falling back to word match`);
+        hits = wordMatch(store, question, o.type, limit);
+      } else {
+        const cache = cacheRoot(ctx.env);
+        await syncIndex(store, embedder, cache);
+        hits = await search(store, embedder, cache, question, { type: o.type, limit, rerank: !o["no-rerank"] });
+      }
+      if (o.json) {
+        ctx.out(JSON.stringify(hits.map((h) => ({ id: h.obj.id, score: round(h.score), similarity: round(h.similarity), summary: h.obj.summary, path: h.obj.path })), null, 2));
+      } else if (!hits.length) ctx.out("No matching objects.");
+      else ctx.out(hits.map((h) => `- [[${h.obj.id}]] (${h.score.toFixed(2)}) — ${h.obj.summary}  (${displayPath(h.obj.path)})`).join("\n"));
+      return 0;
+    },
+  },
+
+  reindex: {
+    usage: "o6y reindex [--full]",
+    summary: "bring the semantic search index up to date (--full re-embeds everything)",
+    options: { full: { type: "boolean" } },
+    async run(ctx, _args, o) {
+      const store = ctx.load();
+      const embedder = embedderFor(store, ctx.env, ctx.fetch);
+      if (!embedder) throw new Error(semanticUnavailable(store, ctx.env)!);
+      const r = await syncIndex(store, embedder, cacheRoot(ctx.env), { full: !!o.full });
+      ctx.out(`${r.total} objects indexed: ${r.embedded} embedded, ${r.removed} removed (cache: ${displayPath(cacheRoot(ctx.env))})`);
       return 0;
     },
   },
@@ -682,6 +742,7 @@ const COMMANDS: Record<string, Command> = {
 const GROUPS: [string, string[]][] = [
   ["Read", ["query", "show", "links", "backlinks", "index", "lint", "stats", "log", "prompt", "export"]],
   ["Write (validated as one change; --dry-run previews)", ["new", "set", "mv", "merge", "rm", "field", "type", "check"]],
+  ["Semantic search (opt-in: semantic.enabled in the root schema, CO_API_KEY)", ["search", "reindex"]],
   ["Viewer", ["view"]],
 ];
 

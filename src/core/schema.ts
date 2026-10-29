@@ -47,9 +47,67 @@ export const DEFAULT_SETTINGS: RootSettings = {
 
 export const RESERVED_FIELDS = ["summary", "pinned"];
 
+/** Semantic search (Cohere embeddings + rerank). Opt-in: sends objects and prompts to Cohere. */
+export interface SemanticSettings {
+  enabled: boolean;
+  embedModel: string;
+  rerankModel: string;
+  /** Rerank score (0–1) an object needs to be suggested with a user message. */
+  threshold: number;
+  /** Max objects suggested with one user message. */
+  maxRelevant: number;
+  /** Nearest objects by embedding that go to the reranker. */
+  candidates: number;
+}
+
+export const DEFAULT_SEMANTIC: SemanticSettings = {
+  enabled: false,
+  embedModel: "embed-v5.0-fast",
+  rerankModel: "rerank-v5.0-fast",
+  threshold: 0.35,
+  maxRelevant: 5,
+  candidates: 40,
+};
+
 export interface RootSchema {
   settings: Partial<RootSettings>;
+  semantic: Partial<SemanticSettings>;
   guidance: string;
+}
+
+function parseSemantic(raw: unknown, errors: string[]): Partial<SemanticSettings> {
+  if (raw === undefined) return {};
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    errors.push("`semantic` must be a mapping, e.g. { enabled: true }");
+    return {};
+  }
+  const out: Partial<SemanticSettings> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const where = `\`semantic.${key}\``;
+    switch (key) {
+      case "enabled":
+        if (typeof value === "boolean") out.enabled = value;
+        else errors.push(`${where} must be true or false`);
+        break;
+      case "embedModel":
+      case "rerankModel":
+        if (typeof value === "string" && value.trim()) out[key] = value.trim();
+        else errors.push(`${where} must be a Cohere model id`);
+        break;
+      case "threshold":
+        if (typeof value === "number" && value >= 0 && value <= 1) out.threshold = value;
+        else errors.push(`${where} must be a number between 0 and 1`);
+        break;
+      case "maxRelevant":
+      case "candidates":
+        if (typeof value === "number" && Number.isInteger(value) && value > 0) out[key] = value;
+        else errors.push(`${where} must be a positive integer`);
+        break;
+      default:
+        errors.push(`${where} is not a setting (allowed: ${Object.keys(DEFAULT_SEMANTIC).join(", ")})`);
+    }
+  }
+  return out;
 }
 
 export function parseRootSchema(text: string): { schema?: RootSchema; errors: string[] } {
@@ -71,8 +129,9 @@ export function parseRootSchema(text: string): { schema?: RootSchema; errors: st
   if (format !== undefined && (typeof format !== "number" || !Number.isInteger(format) || format <= 0)) {
     errors.push("`o6yFormat` is the store format version managed by o6y; leave it as a positive integer");
   }
+  const semantic = parseSemantic(data.semantic, errors);
   if (errors.length) return { errors };
-  return { schema: { settings, guidance: doc.body.trim() }, errors };
+  return { schema: { settings, semantic, guidance: doc.body.trim() }, errors };
 }
 
 export function parseTypeSchema(text: string): { schema?: TypeSchema; errors: string[] } {

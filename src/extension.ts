@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Box, Text } from "@earendil-works/pi-tui";
 import {
   appendLog,
   bootstrap,
@@ -19,6 +20,7 @@ import { workPaths } from "./core/context.ts";
 import { ensureFormat } from "./core/format.ts";
 import { lint } from "./core/ops.ts";
 import { renderObjectFooter, renderPromptSection, renderRootIndex, renderTypeIndex } from "./core/render.ts";
+import { cacheRoot, embedderFor, formatRelevant, relevantTo, semanticUnavailable, syncIndex, worthSuggesting } from "./core/semantic.ts";
 import {
   blockingIssues,
   canonicalPath,
@@ -81,6 +83,14 @@ function exposeCli(layers: Layer[]): void {
 const SCHEMA_MIGRATION_HINT =
   "\nSchema changes must not invalidate existing objects. Migrate the objects first (extra fields are allowed), or perform the schema change and the migration in a single bash command.";
 
+/** How long a user message may wait for relevant-object suggestions before going without. */
+const SUGGEST_TIMEOUT_MS = 2500;
+const RELEVANT_MESSAGE = "o6y-relevant";
+
+interface RelevantDetails {
+  hits: { id: string; summary: string; score: number }[];
+}
+
 type Pending =
   | { tool: "write"; path: string; existed: boolean; warnings: Issue[] }
   | { tool: "edit"; path: string; info: PathInfo; original: string | null; before: Store }
@@ -103,6 +113,13 @@ export default function o6y(pi: ExtensionAPI) {
   let promptSignature = "";
   let workDirs: string[] = [];
   const pending = new Map<string, Pending>();
+  /** Store as of the last prompt refresh. */
+  let current: Store | undefined;
+  /** Objects already suggested this session; each is suggested once. */
+  const suggested = new Set<string>();
+  /** Store fingerprint the search index was last synced at, and the sync in flight. */
+  let indexedSignature = "";
+  let indexing: Promise<void> | undefined;
 
   function configure(cwd: string): void {
     const flagGlobal = pi.getFlag("o6y-global");
@@ -124,7 +141,27 @@ export default function o6y(pi: ExtensionAPI) {
     promptSignature = storeSignature(layers);
     const store = load();
     promptSection = renderPromptSection(store, { workPaths: workDirs });
+    current = store;
     return store;
+  }
+
+  /** Re-embeds changed objects in the background, when semantic search is on and the store changed. */
+  function refreshIndex(store: Store, ctx: ExtensionContext): void {
+    const embedder = embedderFor(store, process.env);
+    if (!embedder || indexing || promptSignature === indexedSignature) return;
+    const signature = promptSignature;
+    if (ctx.hasUI) ctx.ui.setStatus("o6y", "o6y: indexing memory…");
+    indexing = syncIndex(store, embedder, cacheRoot(process.env))
+      .then(() => {
+        indexedSignature = signature;
+        if (ctx.hasUI) ctx.ui.setStatus("o6y", undefined);
+      })
+      .catch((err) => {
+        if (ctx.hasUI) ctx.ui.setStatus("o6y", `o6y: search index not updated (${err instanceof Error ? err.message : err})`);
+      })
+      .finally(() => {
+        indexing = undefined;
+      });
   }
 
   function managedFileReason(info: PathInfo): string | undefined {
@@ -276,6 +313,36 @@ export default function o6y(pi: ExtensionAPI) {
     };
   });
 
+  // --- Relevant objects, suggested with each user message ---
+
+  pi.registerMessageRenderer<RelevantDetails>(RELEVANT_MESSAGE, (message, { expanded, outputPad }, theme) => {
+    const hits = message.details?.hits ?? [];
+    const head = `${theme.fg("accent", "◆ o6y")} ${theme.fg("dim", `${hits.length} relevant:`)} ${hits.map((h) => h.id).join(theme.fg("dim", ", "))}`;
+    const lines = expanded ? hits.map((h) => `  ${theme.fg("accent", h.id)} ${theme.fg("dim", h.score.toFixed(2))} ${theme.fg("muted", `— ${h.summary}`)}`) : [];
+    const box = new Box(outputPad, 0, (t) => theme.bg("customMessageBg", t));
+    box.addChild(new Text([head, ...lines].join("\n"), 0, 0));
+    return box;
+  });
+
+  /** The suggestion message for a user prompt, or undefined when nothing clears the threshold. */
+  async function suggest(prompt: string, store: Store) {
+    const embedder = embedderFor(store, process.env);
+    if (!embedder || !worthSuggesting(prompt)) return undefined;
+    try {
+      const hits = await relevantTo(store, embedder, cacheRoot(process.env), prompt, {
+        exclude: suggested,
+        signal: AbortSignal.timeout(SUGGEST_TIMEOUT_MS),
+      });
+      if (!hits.length) return undefined;
+      for (const h of hits) suggested.add(h.obj.id);
+      const details: RelevantDetails = { hits: hits.map((h) => ({ id: h.obj.id, summary: h.obj.summary, score: h.score })) };
+      return { customType: RELEVANT_MESSAGE, content: formatRelevant(hits), display: true, details };
+    } catch {
+      // Suggestions are best effort: a slow or failing API never holds up the turn.
+      return undefined;
+    }
+  }
+
   // --- Commands ---
 
   pi.registerCommand("o6y-lint", {
@@ -293,6 +360,7 @@ export default function o6y(pi: ExtensionAPI) {
       const lines = [
         ...layers.map((l) => `${l.name}: ${l.root}${existsSync(l.root) ? "" : " (not created yet)"}`),
         `${store.types.size} types, ${store.objects.size} objects, ${store.errors().length} errors, ${store.wanted.size} wanted`,
+        `Semantic search: ${semanticUnavailable(store, process.env) ?? `on (${store.semantic.embedModel} + ${store.semantic.rerankModel}, threshold ${store.semantic.threshold})`}`,
         "Memory index in the system prompt refreshed.",
       ];
       ctx.ui.notify(lines.join("\n"), "info");
@@ -313,7 +381,9 @@ export default function o6y(pi: ExtensionAPI) {
         appendLog(layers, [{ action: "update", path: join(layer.root, ".schema.md") }], `migrate format ${result.from}→${result.to}`);
       }
     }
+    suggested.clear();
     const store = refreshPrompt();
+    refreshIndex(store, ctx);
     const errors = store.errors().length;
     if (errors && ctx.hasUI) ctx.ui.notify(`o6y: ${errors} validation error(s) in the memory store; run /o6y-lint`, "warning");
   });
@@ -324,6 +394,9 @@ export default function o6y(pi: ExtensionAPI) {
     // pi). Pi appends section changes as a transcript delta, so the cached prefix stays valid.
     if (!promptSection || storeSignature(layers) !== promptSignature) refreshPrompt();
     event.systemPromptOptions.sections.o6y = promptSection;
+    refreshIndex(current!, ctx);
+    const message = await suggest(event.prompt, current!);
+    return message ? { message } : undefined;
   });
 
   pi.on("session_shutdown", async () => {
