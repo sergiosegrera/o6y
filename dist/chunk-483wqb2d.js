@@ -331,6 +331,10 @@ function readActivity(layers) {
   return entries.sort((a, b) => b.at - a.at);
 }
 var BATCH_MIN = 3;
+var dayKey = (at) => {
+  const d = new Date(at);
+  return `day:${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
 function dayLabel(at, now) {
   const d = new Date(at);
   const days = Math.round((new Date(now).setHours(0, 0, 0, 0) - new Date(at).setHours(0, 0, 0, 0)) / 86400000);
@@ -343,14 +347,17 @@ function dayLabel(at, now) {
 function activityRows(entries, open, query = "", now = new Date) {
   const q = query.toLowerCase();
   const shown = q ? entries.filter((e) => e.target.toLowerCase().includes(q) || e.via.toLowerCase().includes(q)) : entries;
-  const groups = [];
+  const days = [];
   for (const e of shown) {
-    const g = groups[groups.length - 1];
-    const head = g?.[0];
-    if (head && head.at === e.at && head.via === e.via)
+    const key = dayKey(e.at);
+    let day = days[days.length - 1];
+    if (day?.key !== key)
+      days.push(day = { key, at: e.at, groups: [] });
+    const g = day.groups[day.groups.length - 1];
+    if (g && g[0].at === e.at && g[0].via === e.via)
       g.push(e);
     else
-      groups.push([e]);
+      day.groups.push([e]);
   }
   const rows = [];
   const seen = new Map;
@@ -359,31 +366,30 @@ function activityRows(entries, open, query = "", now = new Date) {
     seen.set(base, n + 1);
     return n ? `${base}#${n}` : base;
   };
-  let day;
-  for (const g of groups) {
-    const label = dayLabel(g[0].at, now);
-    if (day?.label !== label) {
-      day = { kind: "day", key: unique(`day:${label}`), label, count: 0 };
-      rows.push(day);
-    }
-    day.count += g.length;
-    const entryRow = (e, nested) => ({
-      kind: "entry",
-      key: unique(`${e.at}|${e.action}|${e.target}|${e.via}`),
-      entry: e,
-      nested
-    });
-    if (g.length < BATCH_MIN) {
-      for (const e of g)
-        rows.push(entryRow(e, false));
+  const entryRow = (e, nested) => ({
+    kind: "entry",
+    key: unique(`${e.at}|${e.action}|${e.target}|${e.via}`),
+    entry: e,
+    nested
+  });
+  for (const day of days) {
+    const isOpen = !!q || open.has(day.key);
+    rows.push({ kind: "day", key: day.key, label: dayLabel(day.at, now), entries: day.groups.flat(), open: isOpen });
+    if (!isOpen)
       continue;
+    for (const g of day.groups) {
+      if (g.length < BATCH_MIN) {
+        for (const e of g)
+          rows.push(entryRow(e, false));
+        continue;
+      }
+      const key = unique(`batch:${g[0].at}|${g[0].via}`);
+      const batchOpen = open.has(key);
+      rows.push({ kind: "batch", key, entries: g, open: batchOpen });
+      if (batchOpen)
+        for (const e of g)
+          rows.push(entryRow(e, true));
     }
-    const key = unique(`batch:${g[0].at}|${g[0].via}`);
-    const isOpen = open.has(key);
-    rows.push({ kind: "batch", key, entries: g, open: isOpen });
-    if (isOpen)
-      for (const e of g)
-        rows.push(entryRow(e, true));
   }
   return rows;
 }
@@ -401,7 +407,13 @@ function batchSummary(entries) {
 }
 function activityLine(store, row, width, selected, changed) {
   if (row.kind === "day") {
-    return [{ text: row.label, bold: true, color: "magenta" }, { text: ` ${row.count}`, dim: true }];
+    const label = `${row.open ? "▾" : "▸"} ${row.label}`;
+    const count = ` ${batchSummary(row.entries)}`;
+    return [
+      { text: label, bold: true, color: "magenta", inverse: selected },
+      { text: " ".repeat(Math.max(1, width - label.length - count.length)) },
+      { text: truncate(count, Math.max(0, width - label.length - 1)), dim: true }
+    ];
   }
   if (row.kind === "batch") {
     const head = row.entries[0];
@@ -451,33 +463,37 @@ function renderActivityPage(store, row, width, changed) {
   if (row.kind === "entry") {
     const { object, type } = activityTarget(store, row);
     const page = object ? renderPage(store, object, width, changed) : type ? renderTypePage(store, type, width) : undefined;
-    const head = [describeEntry(row.entry), []];
+    const head2 = [describeEntry(row.entry), []];
     if (page)
-      return { lines: [...head, ...page.lines], links: page.links, linkLines: page.linkLines.map((n) => n + head.length) };
-    lines.push(...head, [{ text: row.entry.target, bold: true, color: "red" }]);
+      return { lines: [...head2, ...page.lines], links: page.links, linkLines: page.linkLines.map((n) => n + head2.length) };
+    lines.push(...head2, [{ text: row.entry.target, bold: true, color: "red" }]);
     lines.push([{ text: row.entry.action === "delete" || !store.objects.has(row.entry.target) ? "No longer in the store." : "", dim: true }]);
     return { lines, links, linkLines };
   }
-  const entries = row.kind === "batch" ? row.entries : [];
-  if (row.kind === "day")
-    lines.push([{ text: row.label, bold: true, color: "magenta" }, { text: ` ${row.count} events`, dim: true }]);
-  else {
-    const head = entries[0];
+  const entries = row.entries;
+  const head = entries[0];
+  if (row.kind === "day") {
+    const date = new Date(head.at).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+    lines.push([{ text: row.label, bold: true, color: "magenta" }, { text: ` ${date} · ${entries.length} changes (${batchSummary(entries)})`, dim: true }], []);
+  } else
     lines.push([{ text: `${entries.length} changes`, bold: true }, { text: ` ${stamp(head.at)} · ${head.via}`, dim: true }], []);
-    for (const e of entries) {
-      const a = ACTION_MARK[e.action];
-      const exists = store.objects.has(e.target);
-      if (exists) {
-        links.push(e.target);
-        linkLines.push(lines.length);
-      }
-      const summary = store.objects.get(e.target)?.summary;
-      lines.push([
-        { text: `${a.mark} `, color: a.color },
-        { text: e.target, color: exists ? "cyan" : "red" },
-        { text: truncate(summary ? ` — ${summary}` : "", Math.max(0, width - e.target.length - 2)), dim: true }
-      ]);
+  for (const e of entries) {
+    const a = ACTION_MARK[e.action];
+    const exists = store.objects.has(e.target);
+    if (exists) {
+      links.push(e.target);
+      linkLines.push(lines.length);
     }
+    const summary = store.objects.get(e.target)?.summary;
+    const time = row.kind === "day" ? `${clock(e.at)} ` : "";
+    const via = row.kind === "day" ? ` (${e.via})` : "";
+    lines.push([
+      { text: time, dim: true },
+      { text: `${a.mark} `, color: a.color },
+      { text: e.target, color: exists ? "cyan" : "red" },
+      { text: via, dim: true },
+      { text: truncate(summary ? ` — ${summary}` : "", Math.max(0, width - time.length - e.target.length - via.length - 2)), dim: true }
+    ]);
   }
   return { lines, links, linkLines };
 }
@@ -559,7 +575,7 @@ function App({ layers, initial, onEdit }) {
   const [searching, setSearching] = useState(false);
   const [open, setOpen] = useState(() => new Set(initial.open ?? []));
   const [sideKey, setSideKey] = useState(initial.sideKey);
-  const [batches, setBatches] = useState(() => new Set(initial.batches ?? []));
+  const [activityOpen, setActivityOpen] = useState(() => new Set(initial.activityOpen ?? []));
   const [asking, setAsking] = useState(false);
   const [question, setQuestion] = useState(initial.results?.query ?? "");
   const [results, setResults] = useState(initial.results?.status === "done" ? initial.results : undefined);
@@ -627,9 +643,9 @@ function App({ layers, initial, onEdit }) {
     return next;
   });
   const activity = useMemo(() => readActivity(layers), [layers, loadedAt]);
-  const actRows = useMemo(() => activityRows(activity, batches), [activity, batches]);
+  const actRows = useMemo(() => activityRows(activity, activityOpen), [activity, activityOpen]);
   const hits = results?.hits ?? [];
-  const sideKeys = useMemo(() => view === "activity" ? actRows.filter((r) => r.kind !== "day").map((r) => r.key) : view === "search" ? hits.map((h) => h.key) : [], [view, actRows, hits]);
+  const sideKeys = useMemo(() => view === "activity" ? actRows.map((r) => r.key) : view === "search" ? hits.map((h) => h.key) : [], [view, actRows, hits]);
   const sideIndex = sideKey && sideKeys.includes(sideKey) ? sideKeys.indexOf(sideKey) : sideKeys.length ? 0 : -1;
   const sideSelected = sideIndex >= 0 ? sideKeys[sideIndex] : undefined;
   const actRow = view === "activity" ? actRows.find((r) => r.key === sideSelected) : undefined;
@@ -738,7 +754,7 @@ function App({ layers, initial, onEdit }) {
     const obj = pageObject ? store.objects.get(pageObject) : undefined;
     if (!obj)
       return;
-    onEdit(obj.path, { current, view, history, filter, open: [...open], sideKey: sideSelected, batches: [...batches], results });
+    onEdit(obj.path, { current, view, history, filter, open: [...open], sideKey: sideSelected, activityOpen: [...activityOpen], results });
     exit();
   };
   useInput((input, key) => {
@@ -835,12 +851,55 @@ function App({ layers, initial, onEdit }) {
         return moveSide(end ? sideKeys.length : -sideKeys.length);
       return moveList(end ? keys.length : -keys.length);
     }
-    if (view === "activity" && focus === "list" && (input === "[" || input === "]")) {
-      const starts = actRows.flatMap((r, i) => r.kind === "day" && actRows[i + 1] ? [sideKeys.indexOf(actRows[i + 1].key)] : []);
-      const target = input === "]" ? starts.find((i) => i > sideIndex) : [...starts].reverse().find((i) => i < sideIndex);
-      if (target !== undefined)
-        moveSide(target - sideIndex);
-      return;
+    if (view === "activity" && focus === "list" && actRow) {
+      const toggleAct = (key2, on) => setActivityOpen((prev) => {
+        const next = new Set(prev);
+        if (on)
+          next.add(key2);
+        else
+          next.delete(key2);
+        return next;
+      });
+      const header2 = actRow.kind === "entry" ? undefined : actRow;
+      if (header2 && (key.return || key.rightArrow || input === "l" || input === " ")) {
+        if (!header2.open)
+          return toggleAct(header2.key, true);
+        if (key.rightArrow || input === "l")
+          return moveSide(1);
+        return toggleAct(header2.key, false);
+      }
+      const parent = () => {
+        const at = actRows.indexOf(actRow);
+        const nested = actRow.kind === "entry" && actRow.nested;
+        for (let i = at - 1;i >= 0; i--)
+          if (actRows[i].kind === (nested ? "batch" : "day"))
+            return actRows[i].key;
+        return;
+      };
+      if (key.leftArrow || input === "h") {
+        if (header2?.open)
+          return toggleAct(header2.key, false);
+        const up = parent();
+        if (up)
+          moveSide(sideKeys.indexOf(up) - sideIndex);
+        return;
+      }
+      if (input === "x") {
+        const day = actRow.kind === "day" ? actRow.key : actRows.slice(0, actRows.indexOf(actRow)).findLast((r) => r.kind === "day")?.key;
+        setActivityOpen(new Set);
+        if (day)
+          setSideKey(day);
+        return;
+      }
+      if (input === "X")
+        return setActivityOpen((prev) => new Set([...prev, ...actRows.filter((r) => r.kind === "day").map((r) => r.key)]));
+      if (input === "[" || input === "]") {
+        const days = actRows.flatMap((r, i) => r.kind === "day" ? [i] : []);
+        const target = input === "]" ? days.find((i) => i > sideIndex) : [...days].reverse().find((i) => i < sideIndex);
+        if (target !== undefined)
+          moveSide(target - sideIndex);
+        return;
+      }
     }
     if (view !== "browse" && focus === "list") {
       if (key.downArrow || input === "j")
@@ -851,16 +910,7 @@ function App({ layers, initial, onEdit }) {
         moveSide(innerHeight - 2);
       else if (key.pageUp || key.ctrl && input === "u")
         moveSide(-(innerHeight - 2));
-      else if (actRow?.kind === "batch" && (key.return || key.rightArrow || input === "l" || (key.leftArrow || input === "h") && actRow.open)) {
-        setBatches((prev) => {
-          const next = new Set(prev);
-          if (next.has(actRow.key))
-            next.delete(actRow.key);
-          else
-            next.add(actRow.key);
-          return next;
-        });
-      } else if (key.return || key.rightArrow || input === "l")
+      else if (key.return || key.rightArrow || input === "l")
         setFocus("page");
       else if (key.escape)
         switchTo("browse");
@@ -1074,7 +1124,7 @@ function App({ layers, initial, onEdit }) {
       })
     ]
   });
-  const footerText = searching ? null : narrow ? view === "browse" ? focus === "list" ? "↑↓ g/G · ⏎→ open · ← close · x/X all · [ ] · 2 activity · / ?" : "↑↓␣ g/G scroll · n/N link · ⏎ go · ← list · e" : focus === "list" ? `↑↓ g/G${view === "activity" ? " · [ ] day" : ""} · ⏎→ page · o open · 1 browse · ?` : "↑↓␣ g/G scroll · n/N link · ⏎ go · ← list · o · e" : view === "browse" ? focus === "list" ? "↑↓ move  g/G top/bottom  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next type  tab page  2 activity  / filter  ? search  b back  e edit  q" : "↑↓/j/k/space scroll  g/G top/bottom  n/N next/prev link  enter follow  ←/esc list  2 activity  ? search  b back  e edit  q quit" : focus === "list" ? `↑↓ move  g/G top/bottom  ${view === "activity" ? "[ ] prev/next day  ⏎/→ expand batch / page" : "⏎/→ page"}  o open in browse  tab page  1 browse  ${view === "activity" ? "" : "2 activity  "}? search  e edit  q` : "↑↓/j/k/space scroll  g/G top/bottom  n/N next/prev link  enter follow  ←/esc list  o open in browse  e edit  q quit";
+  const footerText = searching ? null : narrow ? view === "browse" ? focus === "list" ? "↑↓ g/G · ⏎→ open · ← close · x/X all · [ ] · 2 activity · / ?" : "↑↓␣ g/G scroll · n/N link · ⏎ go · ← list · e" : focus === "list" ? view === "activity" ? "↑↓ g/G · ⏎→ open · ← close · x/X all · [ ] · o · 1 · ?" : "↑↓ g/G · ⏎→ page · o open · 1 browse · ?" : "↑↓␣ g/G scroll · n/N link · ⏎ go · ← list · o · e" : view === "browse" ? focus === "list" ? "↑↓ move  g/G top/bottom  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next type  tab page  2 activity  / filter  ? search  b back  e edit  q" : "↑↓/j/k/space scroll  g/G top/bottom  n/N next/prev link  enter follow  ←/esc list  2 activity  ? search  b back  e edit  q quit" : focus === "list" ? view === "activity" ? "↑↓ move  g/G top/bottom  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next day  o open in browse  tab page  1 browse  ? search  e edit  q" : "↑↓ move  g/G top/bottom  ⏎/→ page  o open in browse  tab page  1 browse  2 activity  ? search  e edit  q" : "↑↓/j/k/space scroll  g/G top/bottom  n/N next/prev link  enter follow  ←/esc list  o open in browse  e edit  q quit";
   const footer = asking ? /* @__PURE__ */ jsxs(Text, {
     wrap: "truncate",
     children: [

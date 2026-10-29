@@ -1004,7 +1004,7 @@ ${extra}
       if (!ctx.isTTY)
         throw new UsageError("the viewer needs an interactive terminal");
       process.env.NODE_ENV ??= "production";
-      const { runViewer } = await import("./chunk-dfh63qsw.js");
+      const { runViewer } = await import("./chunk-483wqb2d.js");
       await runViewer(ctx.layers, { current: id, view: o.activity ? "activity" : "browse", history: [], filter: "", open: [] });
       return 0;
     }

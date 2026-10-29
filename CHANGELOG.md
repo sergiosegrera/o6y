@@ -3,7 +3,8 @@
 ## 0.8.1
 
 - **Viewer:** the activity timeline shows only store changes; suggestions and opens are no longer listed (`o6y suggestions` still summarizes them).
-- **Viewer:** `g`/`G` (or `Home`/`End`) jump to the top or bottom of any list or page, and `[`/`]` jump between days in the activity timeline.
+- **Viewer:** activity days start collapsed and expand like browse types (`enter`/`→`, `←`, `x`/`X` for all, `[`/`]` between days). A day's page lists its changes with their times and sources.
+- **Viewer:** `g`/`G` (or `Home`/`End`) jump to the top or bottom of any list or page.
 
 ## 0.8.0
 

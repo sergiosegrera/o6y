@@ -118,7 +118,7 @@ test("readActivity merges every layer's log.md, newest first", () => {
   expect(readActivity(makeLayers(join(tmp, "nowhere")))).toEqual([]);
 });
 
-test("activityRows: day headers, same-second batches collapse unless open", () => {
+test("activityRows: days and same-second batches start collapsed, like the browse list", () => {
   const now = new Date("2026-10-29T18:00:00");
   const e = (iso: string, action: "create" | "update" | "delete", target: string, via: string) => ({ at: Date.parse(iso), action, target, via, layer: "global" });
   const entries = [
@@ -129,17 +129,28 @@ test("activityRows: day headers, same-second batches collapse unless open", () =
     e("2026-10-28T09:00:00", "create", "note/a", "write"),
     e("2026-10-20T09:00:00", "create", "note/b", "write"),
   ];
-  const rows = activityRows(entries, new Set(), "", now);
-  const outline = rows.map((r) => (r.kind === "day" ? `# ${r.label} (${r.count})` : r.kind === "batch" ? `batch of ${r.entries.length}` : r.entry.target));
-  expect(outline).toEqual(["# Today (4)", "note/a", "batch of 3", "# Yesterday (1)", "note/a", "# Tue, Oct 20 (1)", "note/b"]);
-  const batch = rows.find((r) => r.kind === "batch")!;
-  const opened = activityRows(entries, new Set([batch.key]), "", now);
-  expect(opened.filter((r) => r.kind === "entry" && r.nested).map((r) => (r as { entry: { target: string } }).entry.target)).toEqual(["note/b", "note/c", "note/d"]);
+  const outline = (rows: ReturnType<typeof activityRows>) =>
+    rows.map((r) => (r.kind === "day" ? `${r.open ? "▾" : "▸"} ${r.label} (${r.entries.length})` : r.kind === "batch" ? `${r.open ? "▾" : "▸"} batch of ${r.entries.length}` : `${r.nested ? "    " : "  "}${r.entry.target}`));
+
+  const collapsed = activityRows(entries, new Set(), "", now);
+  expect(outline(collapsed)).toEqual(["▸ Today (4)", "▸ Yesterday (1)", "▸ Tue, Oct 20 (1)"]);
+  // Day keys are dates, so they stay put when "Today" becomes "Yesterday".
+  expect(collapsed.map((r) => r.key)).toEqual(["day:2026-10-29", "day:2026-10-28", "day:2026-10-20"]);
+
+  const today = activityRows(entries, new Set(["day:2026-10-29"]), "", now);
+  expect(outline(today)).toEqual(["▾ Today (4)", "  note/a", "▸ batch of 3", "▸ Yesterday (1)", "▸ Tue, Oct 20 (1)"]);
+  const batch = today.find((r) => r.kind === "batch")!;
+  expect(outline(activityRows(entries, new Set(["day:2026-10-29", batch.key]), "", now)).slice(2, 6)).toEqual([
+    "▾ batch of 3",
+    "    note/b",
+    "    note/c",
+    "    note/d",
+  ]);
+  // A filter opens every day with a match, like the browse filter.
+  expect(outline(activityRows(entries, new Set(), "write", now))).toEqual(["▾ Yesterday (1)", "  note/a", "▾ Tue, Oct 20 (1)", "  note/b"]);
   // Keys stay unique, even for identical entries.
-  const twice = activityRows([entries[0]!, entries[0]!], new Set(), "", now);
+  const twice = activityRows([entries[0]!, entries[0]!], new Set(["day:2026-10-29"]), "", now);
   expect(new Set(twice.map((r) => r.key)).size).toBe(twice.length);
-  // A query matches the target or the source.
-  expect(activityRows(entries, new Set(), "write", now).filter((r) => r.kind === "entry")).toHaveLength(2);
 });
 
 test("activity lines and pages", () => {
@@ -149,11 +160,12 @@ test("activity lines and pages", () => {
     { at: Date.parse("2026-10-29T15:04:00"), action: "update" as const, target: "note/a", via: "edit", layer: "global" },
     { at: Date.parse("2026-10-29T15:03:00"), action: "delete" as const, target: "note/gone", via: "o6y rm", layer: "global" },
   ];
-  const rows = activityRows(entries, new Set(), "", now);
-  const [, a, gone] = rows;
+  const rows = activityRows(entries, new Set(["day:2026-10-29"]), "", now);
+  const [day, a, gone] = rows;
+  expect(plain(activityLine(store, day!, 40, false))).toMatch(/^▾ Today +~1 −1$/);
   expect(plain(activityLine(store, a!, 40, false))).toMatch(/^15:04 ~ note\/a +edit$/);
   expect(plain(activityLine(store, gone!, 40, false))).toMatch(/^15:03 − note\/gone +o6y rm$/);
-  for (const r of [a!, gone!]) expect(plain(activityLine(store, r, 40, false))).toHaveLength(40);
+  for (const r of [day!, a!, gone!]) expect(plain(activityLine(store, r, 40, false))).toHaveLength(40);
   expect(activityLine(store, gone!, 40, false)[2]!.color).toBe("red");
 
   // An entry's page is the object's page under a line saying what happened; links still work.
@@ -164,11 +176,17 @@ test("activity lines and pages", () => {
   expect(plain(page.lines[page.linkLines[0]!]!)).toContain(page.links[0]!);
   expect(plain(renderActivityPage(store, gone!, 60).lines[3]!)).toBe("No longer in the store.");
 
+  // A day's page lists its changes, with times and sources; existing objects are links.
+  const dayPage = renderActivityPage(store, day!, 80);
+  expect(plain(dayPage.lines[0]!)).toMatch(/^Today Thursday,? 29 October 2026 · 2 changes \(~1 −1\)$/);
+  expect(plain(dayPage.lines[2]!)).toBe("15:04 ~ note/a (edit) — A");
+  expect(plain(dayPage.lines[3]!)).toBe("15:03 − note/gone (o6y rm)");
+  expect(dayPage.links).toEqual(["note/a"]);
+
   const batchEntries = ["note/a", "note/b", "note/gone"].map((target) => ({ ...entries[0]!, target, via: "bash" }));
-  const batch = activityRows(batchEntries, new Set(), "", now)[1]!;
+  const batch = activityRows(batchEntries, new Set(["day:2026-10-29"]), "", now)[1]!;
   expect(plain(activityLine(store, batch, 40, false))).toBe("15:04 ▸ 3 changes  ~3 · bash");
-  const batchPage = renderActivityPage(store, batch, 60);
-  expect(batchPage.links).toEqual(["note/a", "note/b"]);
+  expect(renderActivityPage(store, batch, 60).links).toEqual(["note/a", "note/b"]);
 });
 
 test("search lines dim results under the threshold", () => {
