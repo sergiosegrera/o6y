@@ -88,6 +88,57 @@ var DEFAULT_SETTINGS = {
   namesBudget: 1e4
 };
 var RESERVED_FIELDS = ["summary", "pinned"];
+var DEFAULT_SEMANTIC = {
+  enabled: false,
+  embedModel: "embed-v5.0-fast",
+  rerankModel: "rerank-v5.0-fast",
+  threshold: 0.35,
+  maxRelevant: 5,
+  candidates: 40
+};
+function parseSemantic(raw, errors) {
+  if (raw === undefined)
+    return {};
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    errors.push("`semantic` must be a mapping, e.g. { enabled: true }");
+    return {};
+  }
+  const out = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const where = `\`semantic.${key}\``;
+    switch (key) {
+      case "enabled":
+        if (typeof value === "boolean")
+          out.enabled = value;
+        else
+          errors.push(`${where} must be true or false`);
+        break;
+      case "embedModel":
+      case "rerankModel":
+        if (typeof value === "string" && value.trim())
+          out[key] = value.trim();
+        else
+          errors.push(`${where} must be a Cohere model id`);
+        break;
+      case "threshold":
+        if (typeof value === "number" && value >= 0 && value <= 1)
+          out.threshold = value;
+        else
+          errors.push(`${where} must be a number between 0 and 1`);
+        break;
+      case "maxRelevant":
+      case "candidates":
+        if (typeof value === "number" && Number.isInteger(value) && value > 0)
+          out[key] = value;
+        else
+          errors.push(`${where} must be a positive integer`);
+        break;
+      default:
+        errors.push(`${where} is not a setting (allowed: ${Object.keys(DEFAULT_SEMANTIC).join(", ")})`);
+    }
+  }
+  return out;
+}
 function parseRootSchema(text) {
   const doc = parseDoc(text);
   if (doc.error)
@@ -109,9 +160,10 @@ function parseRootSchema(text) {
   if (format !== undefined && (typeof format !== "number" || !Number.isInteger(format) || format <= 0)) {
     errors.push("`o6yFormat` is the store format version managed by o6y; leave it as a positive integer");
   }
+  const semantic = parseSemantic(data.semantic, errors);
   if (errors.length)
     return { errors };
-  return { schema: { settings, guidance: doc.body.trim() }, errors };
+  return { schema: { settings, semantic, guidance: doc.body.trim() }, errors };
 }
 function parseTypeSchema(text) {
   const doc = parseDoc(text);
@@ -413,6 +465,7 @@ function readLayerFiles(layer, overlay) {
 class Store {
   layers;
   settings;
+  semantic;
   rootGuidance = new Map;
   types = new Map;
   objects = new Map;
@@ -423,6 +476,7 @@ class Store {
     this.layers = layers;
     const filesByLayer = layers.map((layer) => ({ layer, files: readLayerFiles(layer, overlay) }));
     const settings = { ...DEFAULT_SETTINGS };
+    const semantic = { ...DEFAULT_SEMANTIC };
     const pendingTypes = [];
     const pendingObjects = [];
     for (const { layer, files } of filesByLayer) {
@@ -437,6 +491,7 @@ class Store {
               this.issue(file.path, "error", "root-schema", message);
             if (schema) {
               Object.assign(settings, schema.settings);
+              Object.assign(semantic, schema.semantic);
               if (schema.guidance)
                 this.rootGuidance.set(layer.name, schema.guidance);
             }
@@ -461,6 +516,7 @@ class Store {
       }
     }
     this.settings = settings;
+    this.semantic = semantic;
     for (const { layer, type, file } of pendingTypes) {
       const existing = this.types.get(type);
       if (existing) {

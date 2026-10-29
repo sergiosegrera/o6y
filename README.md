@@ -58,17 +58,35 @@ o6y mv note/ledger note/ledger-service    # rename + rewrite every link
 o6y merge note/dup note/original      # fold a duplicate in
 o6y field rename person role title    # schema + every object, one validated step
 o6y prompt --stats                    # where the system-prompt budget goes
+o6y search "who reviews ledger changes?"   # by meaning (opt-in, below)
 o6y help                              # everything else: show, links, backlinks, new, set, rm, type rename, check, log, stats, export
 ```
 
 Write commands validate the whole change before touching disk, log it, and take `--dry-run`.
+
+## Semantic search (opt-in)
+
+With semantic search on, o6y finds objects by meaning and, on each of your messages, suggests the ones that look relevant to the agent. It uses Cohere embeddings to find candidates and Cohere rerank to score them. It is **off by default**, because it sends your memory and your messages to Cohere. To turn it on, add this to `~/.agents/o6y/.schema.md` and set `CO_API_KEY`:
+
+```yaml
+semantic:
+  enabled: true
+  threshold: 0.35     # how relevant (0–1) an object must be to be suggested
+```
+
+- When a message matches something, a line like `◆ o6y 2 relevant: person/ana-ruiz, decision/postgres-advisory-locks` appears under it in pi; expand it to see scores and summaries. The agent gets the same list. Each object is suggested once per session, and pinned objects never are.
+- Suggestions are best effort: they give up after 2.5 s and never fail a turn.
+- `o6y search "<question>"` searches by meaning from the shell. Without a key, it falls back to word matching.
+- The vectors are cached in `~/.cache/o6y` (override with `O6Y_CACHE`), not in your store, and only changed objects are re-embedded. `o6y reindex --full` rebuilds the index.
+
+See SPEC.md for the models and the rest of the settings.
 
 ## Viewer
 
 `o6y` (or `o6y view`) in a terminal opens a live viewer of your stores, built with Ink. To use the command outside pi, install it with Bun or npm:
 
 ```bash
-bun add -g github:sergiosegrera/o6y#v0.6.0     # or: npm i -g github:sergiosegrera/o6y#v0.6.0
+bun add -g github:sergiosegrera/o6y#v0.7.0     # or: npm i -g github:sergiosegrera/o6y#v0.7.0
 o6y                                             # viewer; o6y view --tree note/payments-api
 ```
 
