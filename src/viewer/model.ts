@@ -1,10 +1,14 @@
 /**
- * Pure view model for the o6y viewer: link edges, the browse list, page lines and the link tree.
+ * View model for the o6y viewer: link edges, the browse list, page lines, the activity timeline
+ * and search results.
  * Lines are arrays of styled segments so they can be rendered by Ink or tested as plain text.
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { stringify } from "yaml";
 import { type Edge, neighbors } from "../core/ops.ts";
-import type { ObjectEntry, Store } from "../core/store.ts";
+import { readSuggestionLog } from "../core/semantic.ts";
+import { type Layer, LOG_FILE, type ObjectEntry, type Store } from "../core/store.ts";
 
 export { type Edge, neighbors };
 import { displayPath } from "../core/render.ts";
@@ -325,89 +329,236 @@ export function renderWantedPage(store: Store, width: number): Page {
   return { lines, links, linkLines };
 }
 
-// ── link tree ────────────────────────────────────────────────────────────
+// ── activity ─────────────────────────────────────────────────────────────
 
-export interface TreeNode {
-  /** Unique path from the root, e.g. `note/a>out:note/b>in:person/c`. */
-  key: string;
-  id: string;
-  depth: number;
-  /** How this node relates to its parent: linked from it (out), links to it (in), or both. */
-  dir: "root" | "out" | "in" | "both";
-  via: string[];
-  missing: boolean;
-  /** Already an ancestor on this path; shown but not expandable. */
-  cycle: boolean;
-  expandable: boolean;
-  expanded: boolean;
-  /** For each ancestor level (and this one), whether that node is the last of its siblings. */
-  last: boolean[];
+export type ActivityAction = "create" | "update" | "delete" | "suggest" | "open";
+
+export interface ActivityEntry {
+  at: number;
+  action: ActivityAction;
+  /** An object id, `schema <type>`, `root schema`, or a store-relative path (as log.md names it). */
+  target: string;
+  /** What made the change (`write`, `edit`, `bash`, `o6y mv`…), or for suggestions the session. */
+  via: string;
+  layer: string;
+  /** Suggestions: rerank score. */
+  score?: number;
+}
+
+const LOG_LINE = /^- (\S+) (create|update|delete) (.+) \((.+)\)$/;
+
+/** Parses a layer's log.md, oldest first. */
+export function parseLog(text: string, layer: string): ActivityEntry[] {
+  const out: ActivityEntry[] = [];
+  for (const line of text.split("\n")) {
+    const m = LOG_LINE.exec(line);
+    const at = m ? Date.parse(m[1]!) : NaN;
+    if (m && !Number.isNaN(at)) out.push({ at, action: m[2] as ActivityAction, target: m[3]!, via: m[4]!, layer });
+  }
+  return out;
+}
+
+/** Store changes from every layer's log.md, plus suggestions and opens from the suggestion log. */
+export function readActivity(layers: Layer[], cache?: string): ActivityEntry[] {
+  const entries: ActivityEntry[] = [];
+  for (const layer of layers) {
+    try {
+      entries.push(...parseLog(readFileSync(join(layer.root, LOG_FILE), "utf8"), layer.name));
+    } catch {}
+  }
+  if (cache) {
+    for (const r of readSuggestionLog(cache)) {
+      const at = Date.parse(r.t);
+      if (Number.isNaN(at)) continue;
+      if (r.type === "suggest") for (const h of r.hits) entries.push({ at, action: "suggest", target: h.id, via: r.session, layer: "", score: h.score });
+      else entries.push({ at, action: "open", target: r.id, via: r.via, layer: "" });
+    }
+  }
+  return entries.sort((a, b) => b.at - a.at);
+}
+
+export type ActivityRow =
+  | { kind: "day"; key: string; label: string; count: number }
+  | { kind: "entry"; key: string; entry: ActivityEntry; nested: boolean }
+  | { kind: "batch"; key: string; entries: ActivityEntry[]; open: boolean };
+
+/** Changes this many or more with the same second and source (a bash migration, an `o6y mv`) collapse into one row. */
+const BATCH_MIN = 3;
+const isSuggestion = (e: ActivityEntry) => e.action === "suggest" || e.action === "open";
+
+function dayLabel(at: number, now: Date): string {
+  const d = new Date(at);
+  const days = Math.round((new Date(now).setHours(0, 0, 0, 0) - new Date(at).setHours(0, 0, 0, 0)) / 86_400_000);
+  if (days === 0) return "Today";
+  if (days === 1) return "Yesterday";
+  return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", ...(days > 300 ? { year: "numeric" } : {}) });
 }
 
 /**
- * The visible rows of a tree rooted at `root`: each node's children are what it links to (→),
- * then what links to it (←); mutual links appear once (↔). The parent itself is left out of its
- * children. Only nodes whose key is in `expanded` show their children.
+ * Newest first, under day headers. Same-second changes from one source collapse into a batch
+ * row; only batches whose key is in `open` list their entries. `query` matches target or source.
  */
-export function linkTree(store: Store, root: string, expanded: Set<string>): TreeNode[] {
-  const rows: TreeNode[] = [];
-  const childrenOf = (id: string, parent: string | undefined) => {
-    const nb = neighbors(store, id);
-    const incoming = new Map(nb.in.map((e) => [e.id, e]));
-    const children: { e: Edge; dir: "out" | "in" | "both" }[] = [];
-    for (const e of nb.out) {
-      const back = incoming.get(e.id);
-      if (back) incoming.delete(e.id);
-      children.push(back ? { e: { ...e, via: [...new Set([...e.via, ...back.via])] }, dir: "both" } : { e, dir: "out" });
+export function activityRows(entries: ActivityEntry[], open: Set<string>, query = "", now = new Date()): ActivityRow[] {
+  const q = query.toLowerCase();
+  const shown = q ? entries.filter((e) => e.target.toLowerCase().includes(q) || e.via.toLowerCase().includes(q)) : entries;
+  const groups: ActivityEntry[][] = [];
+  for (const e of shown) {
+    const g = groups[groups.length - 1];
+    const head = g?.[0];
+    if (head && head.at === e.at && head.via === e.via && isSuggestion(head) === isSuggestion(e)) g.push(e);
+    else groups.push([e]);
+  }
+  const rows: ActivityRow[] = [];
+  const seen = new Map<string, number>();
+  const unique = (base: string) => {
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    return n ? `${base}#${n}` : base;
+  };
+  let day: Extract<ActivityRow, { kind: "day" }> | undefined;
+  for (const g of groups) {
+    const label = dayLabel(g[0]!.at, now);
+    if (day?.label !== label) {
+      day = { kind: "day", key: unique(`day:${label}`), label, count: 0 };
+      rows.push(day);
     }
-    for (const e of incoming.values()) children.push({ e, dir: "in" });
-    return children.filter((c) => c.e.id !== parent);
-  };
-  const visit = (id: string, key: string, depth: number, dir: TreeNode["dir"], via: string[], last: boolean[], ancestors: string[]) => {
-    const cycle = ancestors.includes(id);
-    const children = cycle ? [] : childrenOf(id, ancestors[ancestors.length - 1]);
-    const isOpen = expanded.has(key) && children.length > 0;
-    rows.push({
-      key,
-      id,
-      depth,
-      dir,
-      via,
-      missing: !store.objects.has(id),
-      cycle,
-      expandable: children.length > 0,
-      expanded: isOpen,
-      last,
+    day.count += g.length;
+    const entryRow = (e: ActivityEntry, nested: boolean): ActivityRow => ({
+      kind: "entry",
+      key: unique(`${e.at}|${e.action}|${e.target}|${e.via}`),
+      entry: e,
+      nested,
     });
-    if (!isOpen) return;
-    const next = [...ancestors, id];
-    children.forEach(({ e, dir: d }, i) =>
-      visit(e.id, `${key}>${d}:${e.id}`, depth + 1, d, e.via, [...last, i === children.length - 1], next),
-    );
-  };
-  visit(root, root, 0, "root", [], [true], []);
+    if (g.length < BATCH_MIN) {
+      for (const e of g) rows.push(entryRow(e, false));
+      continue;
+    }
+    const key = unique(`batch:${g[0]!.at}|${g[0]!.via}|${isSuggestion(g[0]!) ? "s" : "c"}`);
+    const isOpen = open.has(key);
+    rows.push({ kind: "batch", key, entries: g, open: isOpen });
+    if (isOpen) for (const e of g) rows.push(entryRow(e, true));
+  }
   return rows;
 }
 
-/** One tree row: guides, expand marker, direction, id, and the summary if there's room. */
-export function treeLine(store: Store, node: TreeNode, width: number, selected: boolean, changed?: Set<string>): Line {
-  let guides = "";
-  for (let d = 1; d < node.depth; d++) guides += node.last[d] ? "   " : "│  ";
-  if (node.depth > 0) guides += node.last[node.depth] ? "└─ " : "├─ ";
-  const marker = node.cycle ? "↺ " : node.expandable ? (node.expanded ? "▾ " : "▸ ") : "  ";
-  const arrow = { root: "", out: "→ ", in: "← ", both: "↔ " }[node.dir];
-  const color = node.missing ? "red" : node.dir === "root" ? "green" : "cyan";
-  const used = guides.length + marker.length + arrow.length;
-  const id = truncate(node.id, Math.max(4, width - used));
+const ACTION_MARK: Record<ActivityAction, { mark: string; color: string; verb: string }> = {
+  create: { mark: "+", color: "green", verb: "created" },
+  update: { mark: "~", color: "yellow", verb: "updated" },
+  delete: { mark: "−", color: "red", verb: "deleted" },
+  suggest: { mark: "◆", color: "cyan", verb: "suggested" },
+  open: { mark: "↗", color: "blue", verb: "opened" },
+};
+
+const clock = (at: number) => new Date(at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+
+/** What an entry shows on the right: the source, or for a suggestion its score. */
+const entrySource = (e: ActivityEntry) => (e.action === "suggest" ? (e.score ?? 0).toFixed(2) : e.via);
+
+function batchSummary(entries: ActivityEntry[]): string {
+  const counts = new Map<ActivityAction, number>();
+  for (const e of entries) counts.set(e.action, (counts.get(e.action) ?? 0) + 1);
+  return [...counts].map(([a, n]) => `${ACTION_MARK[a].mark}${n}`).join(" ");
+}
+
+/** One row of the activity list. */
+export function activityLine(store: Store, row: ActivityRow, width: number, selected: boolean, changed?: Set<string>): Line {
+  if (row.kind === "day") {
+    return [{ text: row.label, bold: true, color: "magenta" }, { text: ` ${row.count}`, dim: true }];
+  }
+  if (row.kind === "batch") {
+    const head = row.entries[0]!;
+    const what = isSuggestion(head) ? `${row.entries.length} suggested` : `${row.entries.length} changes`;
+    const left = `${clock(head.at)} ${row.open ? "▾" : "▸"} ${what} `;
+    const right = ` ${batchSummary(row.entries)} · ${isSuggestion(head) ? "suggestions" : head.via}`;
+    return [
+      { text: left, bold: selected, inverse: selected, color: selected ? "cyan" : undefined },
+      { text: truncate(right, Math.max(0, width - left.length)), dim: true },
+    ];
+  }
+  const e = row.entry;
+  const a = ACTION_MARK[e.action];
+  const time = row.nested ? "   " : clock(e.at);
+  const missing = !e.target.includes(" ") && e.target.includes("/") && !store.objects.has(e.target);
+  const source = ` ${entrySource(e)}`;
+  const mark = changed?.has(e.target) ? " •" : "";
+  const nameWidth = Math.max(4, width - time.length - 3 - mark.length - (width > 34 ? source.length : 0));
   const segs: Line = [
-    { text: guides, dim: true },
-    { text: marker, color: node.cycle ? "gray" : "yellow" },
-    { text: arrow, dim: true },
-    { text: id, color, bold: selected || node.dir === "root", inverse: selected, dim: node.cycle },
+    { text: `${time} `, dim: true },
+    { text: `${a.mark} `, color: a.color },
+    { text: truncate(e.target, nameWidth), color: missing ? "red" : e.target.includes(" ") ? "magenta" : selected ? "cyan" : undefined, bold: selected, inverse: selected },
   ];
-  if (changed?.has(node.id)) segs.push({ text: " •", color: "green" });
-  const room = width - used - id.length - (changed?.has(node.id) ? 2 : 0);
-  const summary = node.cycle ? "(already above)" : (store.objects.get(node.id)?.summary ?? "not written yet");
-  if (room > 12) segs.push({ text: truncate(` — ${summary}`, room), dim: true });
+  if (mark) segs.push({ text: mark, color: "green" });
+  // The source, right-aligned, when it fits.
+  const room = width - plain(segs).length;
+  if (room >= source.length) segs.push({ text: source.padStart(room), dim: true });
   return segs;
+}
+
+/** The object an activity row points at, if it still exists (schema rows point at the type). */
+export function activityTarget(store: Store, row: ActivityRow): { object?: string; type?: string } {
+  if (row.kind !== "entry") return {};
+  const t = row.entry.target;
+  if (t.startsWith("schema ")) return store.types.has(t.slice(7)) ? { type: t.slice(7) } : {};
+  return store.objects.has(t) ? { object: t } : {};
+}
+
+/** The right-hand page for an activity row. */
+export function renderActivityPage(store: Store, row: ActivityRow, width: number, changed?: Set<string>): Page {
+  const links: string[] = [];
+  const linkLines: number[] = [];
+  const lines: Line[] = [];
+  const stamp = (at: number) => new Date(at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "medium" });
+  const describeEntry = (e: ActivityEntry): Line => {
+    const a = ACTION_MARK[e.action];
+    return [{ text: `${a.mark} ${a.verb}`, color: a.color }, { text: ` ${stamp(e.at)} · ${e.action === "suggest" ? `score ${entrySource(e)}` : e.action === "open" ? `via ${e.via}` : e.via}${e.layer ? ` · ${e.layer}` : ""}`, dim: true }];
+  };
+  if (row.kind === "entry") {
+    const { object, type } = activityTarget(store, row);
+    const page = object ? renderPage(store, object, width, changed) : type ? renderTypePage(store, type, width) : undefined;
+    const head = [describeEntry(row.entry), []];
+    if (page) return { lines: [...head, ...page.lines], links: page.links, linkLines: page.linkLines.map((n) => n + head.length) };
+    lines.push(...head, [{ text: row.entry.target, bold: true, color: "red" }]);
+    lines.push([{ text: row.entry.action === "delete" || !store.objects.has(row.entry.target) ? "No longer in the store." : "", dim: true }]);
+    return { lines, links, linkLines };
+  }
+  const entries = row.kind === "batch" ? row.entries : [];
+  if (row.kind === "day") lines.push([{ text: row.label, bold: true, color: "magenta" }, { text: ` ${row.count} events`, dim: true }]);
+  else {
+    const head = entries[0]!;
+    lines.push([{ text: isSuggestion(head) ? `${entries.length} suggestions` : `${entries.length} changes`, bold: true }, { text: ` ${stamp(head.at)} · ${isSuggestion(head) ? "suggestions" : head.via}`, dim: true }], []);
+    for (const e of entries) {
+      const a = ACTION_MARK[e.action];
+      const exists = store.objects.has(e.target);
+      if (exists) {
+        links.push(e.target);
+        linkLines.push(lines.length);
+      }
+      const summary = store.objects.get(e.target)?.summary;
+      lines.push([
+        { text: `${a.mark} `, color: a.color },
+        { text: e.target, color: exists ? "cyan" : "red" },
+        { text: truncate(summary ? ` — ${summary}` : e.action === "suggest" ? ` ${entrySource(e)}` : "", Math.max(0, width - e.target.length - 2)), dim: true },
+      ]);
+    }
+  }
+  return { lines, links, linkLines };
+}
+
+// ── semantic search results ──────────────────────────────────────────────
+
+export interface SearchRow {
+  key: string;
+  id: string;
+  score: number;
+  similarity: number;
+}
+
+/** One result line; results under the threshold are dimmed (the agent wouldn't be shown them). */
+export function searchLine(store: Store, hit: SearchRow, width: number, selected: boolean, threshold: number): Line {
+  const score = `${hit.score.toFixed(2)} `;
+  const below = hit.score < threshold;
+  return [
+    { text: score, color: below ? "gray" : "green" },
+    { text: truncate(hit.id, Math.max(4, width - score.length)), color: selected ? "cyan" : undefined, bold: selected, inverse: selected, dim: below && !selected },
+  ];
 }

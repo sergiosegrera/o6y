@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.8.0
+
+- **Viewer: activity replaces the link tree.** `2` (or `a`) opens a timeline of the store: creates, updates and deletes from `log.md` with what made them, grouped by day, with same-second batches (a bash migration, an `o6y mv`) collapsed. With semantic search on, it also shows suggestions (`◆` with score) and when the agent opened them (`↗`). `o6y view --tree` is gone; `o6y view --activity` opens on the timeline. Backlinks are still on every page.
+- **Viewer: `?` searches by meaning**, listing up to 20 results with a line at the threshold, so you can check what a message would get suggested. Results stay under `3`.
+- **The agent is told about `o6y search`:** with semantic search on, the prompt rules point to `o6y search "<question>"` for questions (and `o6y query` for exact filters), and say what `<o6y-relevant>` lists are. With it off, the rules are unchanged.
+
 ## 0.7.1
 
 Semantic search fixes and tuning, from an eval on a 208-object store (56 relevant and 30 irrelevant prompts):

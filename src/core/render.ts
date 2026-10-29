@@ -156,8 +156,15 @@ const RULES = `o6y is your persistent, typed memory: a wiki of markdown files yo
 - Link objects with [[type/slug]]. Links to things that don't exist yet are allowed (reported as warnings / wanted pages).
 - ${INDEX_FILE} files are virtual: <store>/${INDEX_FILE} is the full catalog, <store>/<type>/${INDEX_FILE} lists one type. Reading an object shows its backlinks.
 - Writes are validated; when one is rejected, fix it and retry. Bash changes to a store are validated as a transaction and rolled back if they break it.
-- The \`o6y\` shell command searches and maintains memory: \`o6y query <text>\` (or --type/--where/--links-to), \`o6y lint\`, and validated multi-file changes such as \`o6y mv\` (rename + relink), \`o6y merge\`, \`o6y field rename\`. Prefer it over hand-written sed/perl. \`o6y help\` lists everything.
-- Consult memory before work that touches what it covers (people, preferences, decisions, notes). Summaries are only pointers: read every object relevant to the task (including the people involved) before advising or acting. Record durable knowledge you learn — the tribal knowledge a teammate would need — not task chatter. Update existing objects rather than duplicating them. Project-specific → project store; shared → global store.`;
+- The \`o6y\` shell command searches and maintains memory: {SEARCH}\`o6y lint\`, and validated multi-file changes such as \`o6y mv\` (rename + relink), \`o6y merge\`, \`o6y field rename\`. Prefer it over hand-written sed/perl. \`o6y help\` lists everything.
+- Consult memory before work that touches what it covers (people, preferences, decisions, notes). Summaries are only pointers: read every object relevant to the task (including the people involved) before advising or acting.{RELEVANT} Record durable knowledge you learn — the tribal knowledge a teammate would need — not task chatter. Update existing objects rather than duplicating them. Project-specific → project store; shared → global store.`;
+
+const PLAIN_SEARCH = "`o6y query <text>` (or --type/--where/--links-to), ";
+/** With semantic search on: searching by meaning finds what word matching misses, and suggestions may arrive. */
+const SEMANTIC_SEARCH =
+  '`o6y search "<question>"` finds objects by meaning (use it before work memory may cover; "No matching objects." means it has nothing), `o6y query` for exact filters (--type/--where/--links-to), ';
+
+const RELEVANT_NOTE = " A user message may come with an <o6y-relevant> list of objects that look relevant: read the ones that apply.";
 
 /** Objects changed within this window of each other, in numbers of at least BULK_MIN, are a bulk change. */
 const BULK_WINDOW_MS = 120_000;
@@ -264,7 +271,9 @@ export function renderPromptSection(store: Store, options: PromptOptions = {}): 
 
 /** The prompt section plus a breakdown of where its characters and budget went. */
 export function buildPromptSection(store: Store, options: PromptOptions = {}): { text: string; stats: PromptStats } {
-  const rules = RULES.replace("{MAX}", String(store.settings.summaryMaxLength));
+  const rules = RULES.replace("{MAX}", String(store.settings.summaryMaxLength))
+    .replace("{SEARCH}", store.semantic.enabled ? SEMANTIC_SEARCH : PLAIN_SEARCH)
+    .replace("{RELEVANT}", store.semantic.enabled ? RELEVANT_NOTE : "");
   const head: string[] = [rules, "", "Stores:", ...store.layers.map((l) => `- ${l.name}: ${displayPath(l.root)}`)];
   const guidanceStart = head.join("\n").length;
   for (const layer of store.layers) {
