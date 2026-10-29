@@ -52,12 +52,16 @@ export interface SemanticSettings {
   enabled: boolean;
   embedModel: string;
   rerankModel: string;
-  /** Rerank score (0–1) an object needs to be suggested with a user message. */
+  /** Rerank score (0–1) an object needs to be suggested with a user message, or listed by `o6y search`. */
   threshold: number;
+  /** Cosine similarity a candidate needs to reach the reranker; keeps rerank from promoting far-off objects. Tuned per embedding model. */
+  minSimilarity: number;
   /** Max objects suggested with one user message. */
   maxRelevant: number;
   /** Nearest objects by embedding that go to the reranker. */
   candidates: number;
+  /** Also write user messages to the local suggestion log (ids and scores are always logged). */
+  logPrompts: boolean;
 }
 
 export const DEFAULT_SEMANTIC: SemanticSettings = {
@@ -65,8 +69,10 @@ export const DEFAULT_SEMANTIC: SemanticSettings = {
   embedModel: "embed-v5.0-fast",
   rerankModel: "rerank-v5.0-fast",
   threshold: 0.35,
+  minSimilarity: 0.16,
   maxRelevant: 5,
   candidates: 40,
+  logPrompts: false,
 };
 
 export interface RootSchema {
@@ -86,7 +92,8 @@ function parseSemantic(raw: unknown, errors: string[]): Partial<SemanticSettings
     const where = `\`semantic.${key}\``;
     switch (key) {
       case "enabled":
-        if (typeof value === "boolean") out.enabled = value;
+      case "logPrompts":
+        if (typeof value === "boolean") out[key] = value;
         else errors.push(`${where} must be true or false`);
         break;
       case "embedModel":
@@ -95,7 +102,8 @@ function parseSemantic(raw: unknown, errors: string[]): Partial<SemanticSettings
         else errors.push(`${where} must be a Cohere model id`);
         break;
       case "threshold":
-        if (typeof value === "number" && value >= 0 && value <= 1) out.threshold = value;
+      case "minSimilarity":
+        if (typeof value === "number" && value >= 0 && value <= 1) out[key] = value;
         else errors.push(`${where} must be a number between 0 and 1`);
         break;
       case "maxRelevant":

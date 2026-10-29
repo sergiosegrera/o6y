@@ -4,7 +4,7 @@ import {
   displayPath,
   neighbors,
   storeSignature
-} from "./chunk-9m2y2zzd.js";
+} from "./chunk-4rjx79a1.js";
 
 // src/viewer/run.tsx
 import { spawnSync } from "node:child_process";

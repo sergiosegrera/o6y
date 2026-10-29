@@ -22,7 +22,7 @@ import {
   renderObjectFooter,
   renderRootIndex,
   renderTypeIndex
-} from "./chunk-9m2y2zzd.js";
+} from "./chunk-4rjx79a1.js";
 
 // src/cli/o6y.ts
 import { readFileSync as readFileSync4 } from "node:fs";
@@ -257,7 +257,7 @@ class Plan {
 
 // src/core/semantic.ts
 import { createHash } from "node:crypto";
-import { existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { appendFileSync, existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync, writeFileSync as writeFileSync2 } from "node:fs";
 import { homedir } from "node:os";
 import { join as join2 } from "node:path";
 var INDEX_VERSION = 1;
@@ -384,8 +384,23 @@ function writeIndex(dir, index) {
   writeFileSync2(tmp("index.json"), JSON.stringify(meta));
   renameSync(tmp("index.json"), join2(dir, "index.json"));
 }
+var SKIP_CODES = {
+  frontmatter: "invalid frontmatter",
+  "unknown-type": "type has no schema",
+  "duplicate-id": "id also exists in another layer"
+};
+function skippedObjects(store) {
+  const out = [];
+  for (const issue of store.issues) {
+    const reason = SKIP_CODES[issue.code];
+    const info = reason ? classifyPath(store.layers, issue.path) : undefined;
+    if (info?.kind === "object")
+      out.push({ id: info.id, path: issue.path, layer: info.layer.root, reason });
+  }
+  return out;
+}
 async function syncIndex(store, embedder, cache, options = {}) {
-  const result = { embedded: 0, removed: 0, total: 0 };
+  const result = { embedded: 0, removed: 0, total: 0, skipped: skippedObjects(store) };
   const model = store.semantic.embedModel;
   for (const layer of store.layers) {
     const dir = indexDir(cache, layer);
@@ -394,6 +409,9 @@ async function syncIndex(store, embedder, cache, options = {}) {
     const previous = new Map;
     usable?.ids.forEach((id, row) => previous.set(id, { hash: usable.hashes[row], row }));
     const objects = [...store.objects.values()].filter((o) => o.layer.root === layer.root).sort((a, b) => a.id.localeCompare(b.id));
+    const shadowed = result.skipped.some((s) => s.layer === layer.root);
+    if (!objects.length && shadowed)
+      continue;
     const texts = objects.map((o) => objectText(store, o));
     const hashes = texts.map(hash);
     const stale = objects.map((_, i) => i).filter((i) => previous.get(objects[i].id)?.hash !== hashes[i]);
@@ -407,12 +425,12 @@ async function syncIndex(store, embedder, cache, options = {}) {
       const v = freshByIndex.get(i) ?? usable.vectors.subarray(previous.get(o.id).row * dim, (previous.get(o.id).row + 1) * dim);
       vectors.set(v, i * dim);
     });
-    const current = new Set(objects.map((o) => o.id));
-    const removed = usable ? usable.ids.filter((id) => !current.has(id)).length : 0;
+    const removed = usable ? usable.ids.filter((id) => !store.objects.has(id)).length : 0;
+    const dropped = usable ? usable.ids.some((id) => store.objects.get(id)?.layer.root !== layer.root) : false;
     result.embedded += stale.length;
     result.removed += removed;
     result.total += objects.length;
-    const changed = stale.length > 0 || removed > 0 || !old || old.model !== model;
+    const changed = stale.length > 0 || dropped || !old || old.model !== model;
     if (changed && (objects.length || existsSync2(dir)))
       writeIndex(dir, { model, dim, ids: objects.map((o) => o.id), hashes, vectors });
   }
@@ -437,11 +455,63 @@ async function search(store, embedder, cache, query2, options = {}) {
     });
   }
   scored.sort((a, b) => b.similarity - a.similarity);
-  if (options.rerank === false)
-    return scored.slice(0, limit).map((s) => ({ ...s, score: s.similarity }));
-  const candidates = scored.slice(0, Math.max(store.semantic.candidates, limit));
+  const minScore = options.minScore ?? 0;
+  if (options.rerank === false) {
+    return scored.slice(0, limit).map((s) => ({ ...s, score: s.similarity })).filter((h) => h.score >= minScore);
+  }
+  const candidates = scored.filter((s) => s.similarity >= store.semantic.minSimilarity).slice(0, Math.max(store.semantic.candidates, limit));
   const ranked = await embedder.rerank(query2, candidates.map((c) => objectText(store, c.obj, RERANK_TEXT_MAX)), limit, options.signal);
-  return ranked.map((r) => ({ ...candidates[r.index], score: r.score }));
+  return ranked.map((r) => ({ ...candidates[r.index], score: r.score })).filter((h) => h.score >= minScore);
+}
+var suggestionLogPath = (cache) => join2(cache, "suggestions.jsonl");
+function readSuggestionLog(cache) {
+  let text;
+  try {
+    text = readFileSync2(suggestionLogPath(cache), "utf8");
+  } catch {
+    return [];
+  }
+  return text.split(`
+`).flatMap((line) => {
+    try {
+      return line ? [JSON.parse(line)] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+function suggestionStats(records, since) {
+  const recent = since ? records.filter((r) => new Date(r.t) >= since) : records;
+  const used = new Set(recent.filter((r) => r.type === "use").map((r) => `${r.session}\x00${r.id}`));
+  const edges = [0, 0.5, 0.7, 1.01];
+  const bands = edges.slice(0, -1).map((from, i) => ({ from, to: Math.min(edges[i + 1], 1), suggestions: 0, used: 0 }));
+  const ignored = new Map;
+  const everUsed = new Set(recent.flatMap((r) => r.type === "use" ? [r.id] : []));
+  let suggestions = 0;
+  let usedCount = 0;
+  for (const r of recent) {
+    if (r.type !== "suggest")
+      continue;
+    for (const h of r.hits) {
+      const wasUsed = used.has(`${r.session}\x00${h.id}`);
+      suggestions++;
+      if (wasUsed)
+        usedCount++;
+      const band = bands.findLast((b) => h.score >= b.from);
+      band.suggestions++;
+      if (wasUsed)
+        band.used++;
+      if (!everUsed.has(h.id))
+        ignored.set(h.id, (ignored.get(h.id) ?? 0) + 1);
+    }
+  }
+  return {
+    sessions: new Set(recent.filter((r) => r.type === "suggest").map((r) => r.session)).size,
+    suggestions,
+    used: usedCount,
+    bands,
+    ignored: [...ignored].map(([id, times]) => ({ id, times })).sort((a, b) => b.times - a.times || a.id.localeCompare(b.id)).slice(0, 10)
+  };
 }
 
 // src/cli/main.ts
@@ -535,6 +605,10 @@ function editSchema(plan, path, fn) {
   plan.write(path, editFrontmatter(plan.read(path) ?? "", fn));
 }
 var round = (n) => Math.round(n * 1000) / 1000;
+function skippedNote(skipped) {
+  const list = skipped.map((s) => `${s.id} (${s.reason})`).join(", ");
+  return `${skipped.length} object(s) not indexed: ${list}; see \`o6y lint\``;
+}
 function wordMatch(store, question, type, limit) {
   const words = [...new Set(question.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [])];
   if (!words.length)
@@ -584,24 +658,30 @@ var COMMANDS = {
     }
   },
   search: {
-    usage: "o6y search <question> [--type T] [--limit N] [--no-rerank] [--json]",
+    usage: "o6y search <question> [--type T] [--limit N] [--min-score S] [--no-rerank] [--json]",
     summary: "find objects by meaning (Cohere embeddings + rerank; word match when semantic search is off)",
-    options: { type: { type: "string" }, limit: { type: "string" }, "no-rerank": { type: "boolean" }, ...JSON_OPT },
+    options: { type: { type: "string" }, limit: { type: "string" }, "min-score": { type: "string" }, "no-rerank": { type: "boolean" }, ...JSON_OPT },
     async run(ctx, args, o) {
       const question = args.join(" ").trim();
       if (!question)
         throw new UsageError("give a question to search for");
       const limit = o.limit ? Number(o.limit) : 10;
+      const minScore = o["min-score"] === undefined ? undefined : Number(o["min-score"]);
+      if (minScore !== undefined && !(minScore >= 0 && minScore <= 1))
+        throw new UsageError("--min-score takes a number between 0 and 1");
       const store = ctx.load();
       const embedder = embedderFor(store, ctx.env, ctx.fetch);
       let hits;
       if (!embedder) {
         ctx.err(`o6y search: ${semanticUnavailable(store, ctx.env)}; falling back to word match`);
-        hits = wordMatch(store, question, o.type, limit);
+        hits = wordMatch(store, question, o.type, limit).filter((h) => h.score >= (minScore ?? 0));
       } else {
         const cache = cacheRoot(ctx.env);
-        await syncIndex(store, embedder, cache);
-        hits = await search(store, embedder, cache, question, { type: o.type, limit, rerank: !o["no-rerank"] });
+        const synced = await syncIndex(store, embedder, cache);
+        if (synced.skipped.length)
+          ctx.err(`o6y search: ${skippedNote(synced.skipped)}`);
+        const rerank = !o["no-rerank"];
+        hits = await search(store, embedder, cache, question, { type: o.type, limit, rerank, minScore: minScore ?? (rerank ? store.semantic.threshold : 0) });
       }
       if (o.json) {
         ctx.out(JSON.stringify(hits.map((h) => ({ id: h.obj.id, score: round(h.score), similarity: round(h.similarity), summary: h.obj.summary, path: h.obj.path })), null, 2));
@@ -623,7 +703,40 @@ var COMMANDS = {
       if (!embedder)
         throw new Error(semanticUnavailable(store, ctx.env));
       const r = await syncIndex(store, embedder, cacheRoot(ctx.env), { full: !!o.full });
-      ctx.out(`${r.total} objects indexed: ${r.embedded} embedded, ${r.removed} removed (cache: ${displayPath(cacheRoot(ctx.env))})`);
+      const lines = [`${r.total} objects indexed: ${r.embedded} embedded, ${r.removed} removed (cache: ${displayPath(cacheRoot(ctx.env))})`];
+      if (r.skipped.length)
+        lines.push(skippedNote(r.skipped));
+      ctx.out(lines.join(`
+`));
+      return 0;
+    }
+  },
+  suggestions: {
+    usage: "o6y suggestions [--since 7d|DATE] [--json]",
+    summary: "how often suggested objects were then opened, by score (from the local suggestion log)",
+    options: { since: { type: "string" }, ...JSON_OPT },
+    run(ctx, _args, o) {
+      const cache = cacheRoot(ctx.env);
+      const stats = suggestionStats(readSuggestionLog(cache), o.since ? new Date(parseSince(o.since)) : undefined);
+      if (o.json) {
+        ctx.out(JSON.stringify(stats, null, 2));
+        return 0;
+      }
+      if (!stats.suggestions) {
+        ctx.out(`No suggestions logged yet (${displayPath(suggestionLogPath(cache))}).`);
+        return 0;
+      }
+      const pct = (used, of) => of ? `${Math.round(used / of * 100)}%` : "–";
+      const lines = [
+        `${stats.suggestions} objects suggested over ${stats.sessions} session(s); ${stats.used} opened afterwards (${pct(stats.used, stats.suggestions)})`,
+        "",
+        "By rerank score:",
+        ...stats.bands.filter((b) => b.suggestions).map((b) => `  ${b.from.toFixed(2)}–${b.to.toFixed(2)}  ${pct(b.used, b.suggestions).padStart(4)} opened (${b.used}/${b.suggestions})`)
+      ];
+      if (stats.ignored.length)
+        lines.push("", "Suggested but never opened:", ...stats.ignored.map((i) => `  ${i.id} (${i.times}×)`));
+      ctx.out(lines.join(`
+`));
       return 0;
     }
   },
@@ -1142,7 +1255,7 @@ ${extra}
       if (!ctx.isTTY)
         throw new UsageError("the viewer needs an interactive terminal");
       process.env.NODE_ENV ??= "production";
-      const { runViewer } = await import("./chunk-wp20q7nk.js");
+      const { runViewer } = await import("./chunk-5v4ajq3z.js");
       await runViewer(ctx.layers, { current: id, view: o.tree ? "tree" : "browse", history: [], filter: "", open: [] });
       return 0;
     }
@@ -1151,7 +1264,7 @@ ${extra}
 var GROUPS = [
   ["Read", ["query", "show", "links", "backlinks", "index", "lint", "stats", "log", "prompt", "export"]],
   ["Write (validated as one change; --dry-run previews)", ["new", "set", "mv", "merge", "rm", "field", "type", "check"]],
-  ["Semantic search (opt-in: semantic.enabled in the root schema, CO_API_KEY)", ["search", "reindex"]],
+  ["Semantic search (opt-in: semantic.enabled in the root schema, CO_API_KEY)", ["search", "reindex", "suggestions"]],
   ["Viewer", ["view"]]
 ];
 function help() {

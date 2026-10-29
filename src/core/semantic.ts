@@ -4,11 +4,11 @@
  * be rebuilt from the markdown), searched by brute force: a store is thousands of objects at most.
  */
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { SemanticSettings } from "./schema.ts";
-import type { Layer, ObjectEntry, Store } from "./store.ts";
+import { classifyPath, type Layer, type ObjectEntry, type Store } from "./store.ts";
 
 const INDEX_VERSION = 1;
 /** Cohere's limit on texts per embed call. */
@@ -174,13 +174,33 @@ function writeIndex(dir: string, index: VectorIndex): void {
 
 export interface SyncResult {
   embedded: number;
+  /** Indexed objects that no longer exist in any layer. */
   removed: number;
   total: number;
+  /** Object files left out of the index because they don't load (see `o6y lint`). */
+  skipped: { id: string; path: string; layer: string; reason: string }[];
+}
+
+/** Issues that keep an object file out of the store, and so out of the index. */
+const SKIP_CODES: Record<string, string> = {
+  frontmatter: "invalid frontmatter",
+  "unknown-type": "type has no schema",
+  "duplicate-id": "id also exists in another layer",
+};
+
+export function skippedObjects(store: Store): SyncResult["skipped"] {
+  const out: SyncResult["skipped"] = [];
+  for (const issue of store.issues) {
+    const reason = SKIP_CODES[issue.code];
+    const info = reason ? classifyPath(store.layers, issue.path) : undefined;
+    if (info?.kind === "object") out.push({ id: info.id, path: issue.path, layer: info.layer.root, reason: reason! });
+  }
+  return out;
 }
 
 /** Brings every layer's index up to date, embedding only objects whose text changed. */
 export async function syncIndex(store: Store, embedder: Embedder, cache: string, options: { full?: boolean } = {}): Promise<SyncResult> {
-  const result: SyncResult = { embedded: 0, removed: 0, total: 0 };
+  const result: SyncResult = { embedded: 0, removed: 0, total: 0, skipped: skippedObjects(store) };
   const model = store.semantic.embedModel;
   for (const layer of store.layers) {
     const dir = indexDir(cache, layer);
@@ -190,6 +210,9 @@ export async function syncIndex(store: Store, embedder: Embedder, cache: string,
     usable?.ids.forEach((id, row) => previous.set(id, { hash: usable.hashes[row]!, row }));
 
     const objects = [...store.objects.values()].filter((o) => o.layer.root === layer.root).sort((a, b) => a.id.localeCompare(b.id));
+    // A layer whose objects all lost to another layer's ids (overlapping stores) keeps its vectors.
+    const shadowed = result.skipped.some((s) => s.layer === layer.root);
+    if (!objects.length && shadowed) continue;
     const texts = objects.map((o) => objectText(store, o));
     const hashes = texts.map(hash);
     const stale = objects.map((_, i) => i).filter((i) => previous.get(objects[i]!.id)?.hash !== hashes[i]);
@@ -203,12 +226,13 @@ export async function syncIndex(store: Store, embedder: Embedder, cache: string,
       const v = freshByIndex.get(i) ?? usable!.vectors.subarray(previous.get(o.id)!.row * dim, (previous.get(o.id)!.row + 1) * dim);
       vectors.set(v, i * dim);
     });
-    const current = new Set(objects.map((o) => o.id));
-    const removed = usable ? usable.ids.filter((id) => !current.has(id)).length : 0;
+    // Ids now indexed under another layer weren't removed; only ids gone from the store count.
+    const removed = usable ? usable.ids.filter((id) => !store.objects.has(id)).length : 0;
+    const dropped = usable ? usable.ids.some((id) => store.objects.get(id)?.layer.root !== layer.root) : false;
     result.embedded += stale.length;
     result.removed += removed;
     result.total += objects.length;
-    const changed = stale.length > 0 || removed > 0 || !old || old.model !== model;
+    const changed = stale.length > 0 || dropped || !old || old.model !== model;
     if (changed && (objects.length || existsSync(dir))) writeIndex(dir, { model, dim, ids: objects.map((o) => o.id), hashes, vectors });
   }
   return result;
@@ -228,6 +252,8 @@ export interface SearchOptions {
   limit?: number;
   /** Rerank the nearest candidates (default true). */
   rerank?: boolean;
+  /** Leave out results scoring below this (rerank relevance, or similarity without rerank). */
+  minScore?: number;
   /** Ids to leave out. */
   exclude?: Set<string>;
   signal?: AbortSignal;
@@ -250,15 +276,23 @@ export async function search(store: Store, embedder: Embedder, cache: string, qu
     });
   }
   scored.sort((a, b) => b.similarity - a.similarity);
-  if (options.rerank === false) return scored.slice(0, limit).map((s) => ({ ...s, score: s.similarity }));
-  const candidates = scored.slice(0, Math.max(store.semantic.candidates, limit));
+  const minScore = options.minScore ?? 0;
+  if (options.rerank === false) {
+    return scored
+      .slice(0, limit)
+      .map((s) => ({ ...s, score: s.similarity }))
+      .filter((h) => h.score >= minScore);
+  }
+  // The floor applies before rerank, so a weak candidate can't be promoted and the reranker
+  // still fills `limit` from the candidates that clear it.
+  const candidates = scored.filter((s) => s.similarity >= store.semantic.minSimilarity).slice(0, Math.max(store.semantic.candidates, limit));
   const ranked = await embedder.rerank(
     query,
     candidates.map((c) => objectText(store, c.obj, RERANK_TEXT_MAX)),
     limit,
     options.signal,
   );
-  return ranked.map((r) => ({ ...candidates[r.index]!, score: r.score }));
+  return ranked.map((r) => ({ ...candidates[r.index]!, score: r.score })).filter((h) => h.score >= minScore);
 }
 
 /** Whether a user message is worth a relevance lookup: not a command, not a two-word reply. */
@@ -278,8 +312,12 @@ export async function relevantTo(
 ): Promise<Hit[]> {
   const exclude = new Set(options.exclude);
   for (const obj of store.objects.values()) if (obj.pinned) exclude.add(obj.id);
-  const hits = await search(store, embedder, cache, prompt, { limit: store.semantic.maxRelevant, exclude, signal: options.signal });
-  return hits.filter((h) => h.score >= store.semantic.threshold);
+  return search(store, embedder, cache, prompt, {
+    limit: store.semantic.maxRelevant,
+    minScore: store.semantic.threshold,
+    exclude,
+    signal: options.signal,
+  });
 }
 
 export function formatRelevant(hits: Hit[]): string {
@@ -289,4 +327,78 @@ export function formatRelevant(hits: Hit[]): string {
     ...hits.map((h) => `- [[${h.obj.id}]] (${h.score.toFixed(2)}) — ${h.obj.summary}`),
     "</o6y-relevant>",
   ].join("\n");
+}
+
+// ── suggestion log ─────────────────────────────────────────────────────────
+// What was suggested, and whether the agent then opened it, to measure the hook in real sessions.
+// Local only; prompts are written only with `semantic.logPrompts`.
+
+export type LogRecord =
+  | { type: "suggest"; t: string; session: string; turn: number; prompt?: string; hits: { id: string; score: number; similarity: number }[] }
+  | { type: "use"; t: string; session: string; turn: number; id: string; via: string };
+
+export const suggestionLogPath = (cache: string) => join(cache, "suggestions.jsonl");
+
+export function appendSuggestionLog(cache: string, record: LogRecord): void {
+  try {
+    mkdirSync(cache, { recursive: true });
+    appendFileSync(suggestionLogPath(cache), `${JSON.stringify(record)}\n`);
+  } catch {}
+}
+
+export function readSuggestionLog(cache: string): LogRecord[] {
+  let text: string;
+  try {
+    text = readFileSync(suggestionLogPath(cache), "utf8");
+  } catch {
+    return [];
+  }
+  return text.split("\n").flatMap((line) => {
+    try {
+      return line ? [JSON.parse(line) as LogRecord] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
+export interface SuggestionStats {
+  /** Sessions with at least one suggestion. */
+  sessions: number;
+  suggestions: number;
+  used: number;
+  /** By rerank score band, lower bound inclusive. */
+  bands: { from: number; to: number; suggestions: number; used: number }[];
+  /** Objects suggested most often without ever being opened. */
+  ignored: { id: string; times: number }[];
+}
+
+export function suggestionStats(records: LogRecord[], since?: Date): SuggestionStats {
+  const recent = since ? records.filter((r) => new Date(r.t) >= since) : records;
+  const used = new Set(recent.filter((r) => r.type === "use").map((r) => `${r.session}\0${r.id}`));
+  const edges = [0, 0.5, 0.7, 1.01];
+  const bands = edges.slice(0, -1).map((from, i) => ({ from, to: Math.min(edges[i + 1]!, 1), suggestions: 0, used: 0 }));
+  const ignored = new Map<string, number>();
+  const everUsed = new Set(recent.flatMap((r) => (r.type === "use" ? [r.id] : [])));
+  let suggestions = 0;
+  let usedCount = 0;
+  for (const r of recent) {
+    if (r.type !== "suggest") continue;
+    for (const h of r.hits) {
+      const wasUsed = used.has(`${r.session}\0${h.id}`);
+      suggestions++;
+      if (wasUsed) usedCount++;
+      const band = bands.findLast((b) => h.score >= b.from)!;
+      band.suggestions++;
+      if (wasUsed) band.used++;
+      if (!everUsed.has(h.id)) ignored.set(h.id, (ignored.get(h.id) ?? 0) + 1);
+    }
+  }
+  return {
+    sessions: new Set(recent.filter((r) => r.type === "suggest").map((r) => r.session)).size,
+    suggestions,
+    used: usedCount,
+    bands,
+    ignored: [...ignored].map(([id, times]) => ({ id, times })).sort((a, b) => b.times - a.times || a.id.localeCompare(b.id)).slice(0, 10),
+  };
 }

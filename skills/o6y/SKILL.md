@@ -156,7 +156,7 @@ Run it with bash. Every write command validates the whole change before writing 
 | Command | Does |
 |---|---|
 | `o6y query [text] [--type T] [--where f=v]… [--links-to ID] [--linked-from ID] [--json]` | find objects (list and link fields match any element) |
-| `o6y search <question> [--type T] [--limit N] [--json]` | find objects by meaning, best first with a 0–1 score; use it for questions ("who reviews ledger changes?"), `query` for exact filters. Falls back to word match when semantic search is off |
+| `o6y search <question> [--type T] [--limit N] [--json]` | find objects by meaning, best first with a 0–1 score; use it for questions ("who reviews ledger changes?"), `query` for exact filters. Lists only results that clear the store's threshold, so "No matching objects." means memory has nothing on it. Falls back to word match when semantic search is off |
 | `o6y show <id>` · `o6y links <id>` · `o6y backlinks <id>` | an object with backlinks; outgoing or incoming links with the field they use |
 | `o6y index [type]` | the generated catalog |
 | `o6y lint` | errors, warnings, wanted pages, orphans, undeclared fields (exit 1 on errors). Run after bulk changes |

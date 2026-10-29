@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { main } from "../src/cli/main.ts";
@@ -10,13 +10,17 @@ import {
   formatRelevant,
   indexDir,
   readIndex,
+  type LogRecord,
+  readSuggestionLog,
   relevantTo,
   search,
   semanticUnavailable,
+  suggestionStats,
   syncIndex,
   worthSuggesting,
 } from "../src/core/semantic.ts";
 import { makeLayers, Store } from "../src/core/store.ts";
+import { fakeCohere } from "./fake-cohere.ts";
 
 let tmp: string;
 let g: string;
@@ -27,31 +31,6 @@ function put(rel: string, content: string, root = g) {
   const path = join(root, rel);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, content);
-}
-
-const words = (text: string) => text.toLowerCase().match(/[a-z]{3,}/g) ?? [];
-
-/** A stand-in for Cohere: hashed bag-of-words embeddings, word-overlap rerank. Records every call. */
-function fakeCohere() {
-  const calls: { endpoint: string; body: any }[] = [];
-  const embed = (text: string) => {
-    const v = new Array(64).fill(0);
-    for (const w of words(text)) v[[...w].reduce((h, c) => (h * 31 + c.charCodeAt(0)) % 64, 7)] += 1;
-    return v;
-  };
-  const fetchImpl = (async (url: string, init: RequestInit) => {
-    const endpoint = url.split("/v2/")[1]!;
-    const body = JSON.parse(String(init.body));
-    calls.push({ endpoint, body });
-    if (endpoint === "embed") return Response.json({ embeddings: { float: body.texts.map(embed) } });
-    const q = new Set(words(body.query));
-    const results = body.documents
-      .map((d: string, index: number) => ({ index, relevance_score: [...new Set(words(d))].filter((w) => q.has(w)).length / Math.max(q.size, 1) }))
-      .sort((a: any, b: any) => b.relevance_score - a.relevance_score)
-      .slice(0, body.top_n);
-    return Response.json({ results });
-  }) as unknown as typeof fetch;
-  return { calls, fetch: fetchImpl, embedded: () => calls.filter((c) => c.endpoint === "embed" && c.body.input_type === "search_document").flatMap((c) => c.body.texts) };
 }
 
 const env = () => ({ O6Y_HOME: g, O6Y_PROJECT: p, O6Y_CACHE: cache, CO_API_KEY: "test-key" });
@@ -97,12 +76,12 @@ describe("index", () => {
   test("embeds only what changed and drops deleted objects", async () => {
     const api = fakeCohere();
     const embedder = embedderFor(load(), env(), api.fetch)!;
-    expect(await syncIndex(load(), embedder, cache)).toEqual({ embedded: 3, removed: 0, total: 3 });
-    expect(await syncIndex(load(), embedder, cache)).toEqual({ embedded: 0, removed: 0, total: 3 });
+    expect(await syncIndex(load(), embedder, cache)).toMatchObject({ embedded: 3, removed: 0, total: 3, skipped: [] });
+    expect(await syncIndex(load(), embedder, cache)).toMatchObject({ embedded: 0, removed: 0, total: 3 });
 
     put("note/release-train.md", "---\nsummary: Release train moved to Tuesdays\n---\n");
     rmSync(join(g, "note/coffee.md"));
-    expect(await syncIndex(load(), embedder, cache)).toEqual({ embedded: 1, removed: 1, total: 2 });
+    expect(await syncIndex(load(), embedder, cache)).toMatchObject({ embedded: 1, removed: 1, total: 2 });
     expect(api.embedded().at(-1)).toContain("Release train moved to Tuesdays");
 
     const index = readIndex(indexDir(cache, load().layers[0]!))!;
@@ -116,6 +95,33 @@ describe("index", () => {
     put(".schema.md", "---\nsemantic: { enabled: true, embedModel: embed-other }\n---\n");
     expect((await syncIndex(load(), embedderFor(load(), env(), api.fetch)!, cache)).embedded).toBe(3);
     expect(api.calls.at(-1)!.body.model).toBe("embed-other");
+  });
+
+  test("objects that don't load are reported as skipped", async () => {
+    put("note/broken.md", "---\nsummary: has: a colon\n---\n");
+    const api = fakeCohere();
+    const r = await syncIndex(load(), embedderFor(load(), env(), api.fetch)!, cache);
+    expect(r.total).toBe(3);
+    expect(r.skipped).toEqual([{ id: "note/broken", path: join(g, "note/broken.md"), layer: g, reason: "invalid frontmatter" }]);
+  });
+
+  test("overlapping stores: a shadowed layer keeps its vectors, and moved ids aren't 'removed'", async () => {
+    const api = fakeCohere();
+    // Index the real store as the project layer, then run with a copy of it as the global layer.
+    const asProject = Store.load(makeLayers(join(tmp, "elsewhere"), g));
+    await syncIndex(asProject, embedderFor(asProject, env(), api.fetch)!, cache);
+    const copy = join(tmp, "copy");
+    for (const rel of [".schema.md", "person/.schema.md", "note/.schema.md", "person/ana.md", "note/release-train.md", "note/coffee.md"]) {
+      put(rel, readFileSync(join(g, rel), "utf8"), copy);
+    }
+    const overlapping = Store.load(makeLayers(copy, g));
+    const r = await syncIndex(overlapping, embedderFor(overlapping, env(), api.fetch)!, cache);
+    expect(r).toMatchObject({ embedded: 3, removed: 0, total: 3 });
+    expect(r.skipped.map((s) => s.reason)).toEqual(Array(3).fill("id also exists in another layer"));
+    // The real store's index survived, so going back costs no API calls.
+    const before = api.calls.length;
+    expect(await syncIndex(asProject, embedderFor(asProject, env(), api.fetch)!, cache)).toMatchObject({ embedded: 0, removed: 0 });
+    expect(api.calls.length).toBe(before);
   });
 
   test("project and global layers get separate indexes", async () => {
@@ -167,6 +173,32 @@ describe("search", () => {
     expect(await relevantTo(store, embedder, cache, "lunch plans for friday")).toEqual([]);
   });
 
+  test("the similarity floor applies before rerank", async () => {
+    const api = fakeCohere();
+    const store = load();
+    const embedder = embedderFor(store, env(), api.fetch)!;
+    await syncIndex(store, embedder, cache);
+    const query = "who reviews ledger migrations";
+    const bySimilarity = await search(store, embedder, cache, query, { rerank: false });
+    const floor = (bySimilarity[0]!.similarity + bySimilarity[1]!.similarity) / 2;
+    put(".schema.md", `---\nsemantic: { enabled: true, minSimilarity: ${floor} }\n---\n`);
+    const hits = await search(load(), embedder, cache, query, { limit: 3 });
+    expect(api.calls.at(-1)!.body.documents).toHaveLength(1);
+    expect(hits.map((h) => h.obj.id)).toEqual([bySimilarity[0]!.obj.id]);
+  });
+
+  test("minScore drops weak results", async () => {
+    const api = fakeCohere();
+    const store = load();
+    const embedder = embedderFor(store, env(), api.fetch)!;
+    await syncIndex(store, embedder, cache);
+    const query = "who reviews ledger migrations on the release train";
+    const all = await search(store, embedder, cache, query, { minScore: 0 });
+    expect(all.length).toBeGreaterThan(1);
+    const cut = (all[0]!.score + all[1]!.score) / 2;
+    expect((await search(store, embedder, cache, query, { minScore: cut })).map((h) => h.obj.id)).toEqual([all[0]!.obj.id]);
+  });
+
   test("worth suggesting: not commands or short replies", () => {
     expect(worthSuggesting("/o6y")).toBe(false);
     expect(worthSuggesting("ok")).toBe(false);
@@ -178,6 +210,35 @@ describe("search", () => {
     const failing = (async () => Response.json({ message: "invalid api token" }, { status: 401 })) as unknown as typeof fetch;
     const client = cohere({ apiKey: "bad", embedModel: "m", rerankModel: "r", fetch: failing });
     await expect(client.embed(["x"], "search_query")).rejects.toThrow("Cohere embed failed (401): invalid api token");
+  });
+});
+
+describe("suggestion stats", () => {
+  const t = (day: string) => `2026-10-${day}T12:00:00.000Z`;
+  const records: LogRecord[] = [
+    { type: "suggest", t: t("20"), session: "a", turn: 1, hits: [{ id: "person/ana", score: 0.8, similarity: 0.5 }, { id: "note/x", score: 0.4, similarity: 0.2 }] },
+    { type: "use", t: t("20"), session: "a", turn: 1, id: "person/ana", via: "read" },
+    { type: "suggest", t: t("28"), session: "b", turn: 3, hits: [{ id: "note/x", score: 0.36, similarity: 0.2 }, { id: "person/ana", score: 0.6, similarity: 0.4 }] },
+    // Opened in a different session than it was suggested in: doesn't count for session b.
+    { type: "use", t: t("28"), session: "c", turn: 1, id: "person/ana", via: "bash" },
+  ];
+
+  test("counts uses per session, by score band, and never-opened objects", () => {
+    const stats = suggestionStats(records);
+    expect(stats).toMatchObject({ sessions: 2, suggestions: 4, used: 1 });
+    expect(stats.bands).toEqual([
+      { from: 0, to: 0.5, suggestions: 2, used: 0 },
+      { from: 0.5, to: 0.7, suggestions: 1, used: 0 },
+      { from: 0.7, to: 1, suggestions: 1, used: 1 },
+    ]);
+    expect(stats.ignored).toEqual([{ id: "note/x", times: 2 }]);
+    expect(suggestionStats(records, new Date(t("25")))).toMatchObject({ sessions: 1, suggestions: 2, used: 0 });
+  });
+
+  test("the log tolerates a torn last line", () => {
+    mkdirSync(cache, { recursive: true });
+    writeFileSync(join(cache, "suggestions.jsonl"), `${JSON.stringify(records[0])}\n{"type":"sugg`);
+    expect(readSuggestionLog(cache)).toHaveLength(1);
   });
 });
 
@@ -205,6 +266,34 @@ describe("cli", () => {
     expect(existsSync(join(indexDir(cache, load().layers[0]!), "vectors.f32"))).toBe(true);
     const json = JSON.parse((await o6y(["search", "release train", "--json", "--limit", "1"], {}, api.fetch)).out);
     expect(json[0]).toMatchObject({ id: "note/release-train", score: 1 });
+  });
+
+  test("search applies the threshold when reranking; --min-score overrides it", async () => {
+    const api = fakeCohere();
+    expect((await o6y(["search", "banana bread recipe"], {}, api.fetch)).out).toBe("No matching objects.");
+    expect((await o6y(["search", "banana bread recipe", "--min-score", "0"], {}, api.fetch)).out).toContain("(0.00)");
+    expect((await o6y(["search", "x", "--min-score", "2"], {}, api.fetch)).code).toBe(2);
+  });
+
+  test("search and reindex report objects they skip", async () => {
+    put("note/broken.md", "---\nsummary: has: a colon\n---\n");
+    const api = fakeCohere();
+    expect((await o6y(["reindex"], {}, api.fetch)).out).toContain("1 object(s) not indexed: note/broken (invalid frontmatter); see `o6y lint`");
+    expect((await o6y(["search", "ledger migrations"], {}, api.fetch)).err).toContain("note/broken (invalid frontmatter)");
+  });
+
+  test("suggestions summarizes the log", async () => {
+    expect((await o6y(["suggestions"])).out).toContain("No suggestions logged yet");
+    mkdirSync(cache, { recursive: true });
+    const now = new Date().toISOString();
+    const lines = [
+      { type: "suggest", t: now, session: "s", turn: 1, hits: [{ id: "person/ana", score: 0.8, similarity: 0.5 }] },
+      { type: "use", t: now, session: "s", turn: 2, id: "person/ana", via: "read" },
+    ];
+    writeFileSync(join(cache, "suggestions.jsonl"), lines.map((l) => JSON.stringify(l)).join("\n"));
+    const out = (await o6y(["suggestions"])).out;
+    expect(out).toContain("1 objects suggested over 1 session(s); 1 opened afterwards (100%)");
+    expect(out).toContain("0.70–1.00  100% opened (1/1)");
   });
 
   test("search falls back to word match without a key", async () => {

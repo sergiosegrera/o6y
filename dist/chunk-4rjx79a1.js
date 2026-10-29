@@ -93,8 +93,10 @@ var DEFAULT_SEMANTIC = {
   embedModel: "embed-v5.0-fast",
   rerankModel: "rerank-v5.0-fast",
   threshold: 0.35,
+  minSimilarity: 0.16,
   maxRelevant: 5,
-  candidates: 40
+  candidates: 40,
+  logPrompts: false
 };
 function parseSemantic(raw, errors) {
   if (raw === undefined)
@@ -108,8 +110,9 @@ function parseSemantic(raw, errors) {
     const where = `\`semantic.${key}\``;
     switch (key) {
       case "enabled":
+      case "logPrompts":
         if (typeof value === "boolean")
-          out.enabled = value;
+          out[key] = value;
         else
           errors.push(`${where} must be true or false`);
         break;
@@ -121,8 +124,9 @@ function parseSemantic(raw, errors) {
           errors.push(`${where} must be a Cohere model id`);
         break;
       case "threshold":
+      case "minSimilarity":
         if (typeof value === "number" && value >= 0 && value <= 1)
-          out.threshold = value;
+          out[key] = value;
         else
           errors.push(`${where} must be a number between 0 and 1`);
         break;

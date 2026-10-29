@@ -76,7 +76,8 @@ semantic:
 
 - When a message matches something, a line like `◆ o6y 2 relevant: person/ana-ruiz, decision/postgres-advisory-locks` appears under it in pi; expand it to see scores and summaries. The agent gets the same list. Each object is suggested once per session, and pinned objects never are.
 - Suggestions are best effort: they give up after 2.5 s and never fail a turn.
-- `o6y search "<question>"` searches by meaning from the shell. Without a key, it falls back to word matching.
+- `o6y search "<question>"` searches by meaning from the shell, listing only results that clear the threshold (`--min-score 0` lists everything). Without a key, it falls back to word matching.
+- o6y keeps a local log of what it suggested and whether the agent then opened it. `o6y suggestions` shows how often suggestions get used, by score, which is what to tune `threshold` on. Your messages are logged only if you set `logPrompts: true`.
 - The vectors are cached in `~/.cache/o6y` (override with `O6Y_CACHE`), not in your store, and only changed objects are re-embedded. `o6y reindex --full` rebuilds the index.
 
 See SPEC.md for the models and the rest of the settings.
@@ -86,7 +87,7 @@ See SPEC.md for the models and the rest of the settings.
 `o6y` (or `o6y view`) in a terminal opens a live viewer of your stores, built with Ink. To use the command outside pi, install it with Bun or npm:
 
 ```bash
-bun add -g github:sergiosegrera/o6y#v0.7.0     # or: npm i -g github:sergiosegrera/o6y#v0.7.0
+bun add -g github:sergiosegrera/o6y#v0.7.1     # or: npm i -g github:sergiosegrera/o6y#v0.7.1
 o6y                                             # viewer; o6y view --tree note/payments-api
 ```
 

@@ -12,7 +12,18 @@ import { editFrontmatter, parseValue, Plan, renameKey, retargetLinks, splitDoc }
 import { parseId } from "../core/links.ts";
 import { lint, neighbors, query, type QueryParams } from "../core/ops.ts";
 import { buildPromptSection, displayPath, renderObjectFooter, renderRootIndex, renderTypeIndex } from "../core/render.ts";
-import { cacheRoot, embedderFor, type Hit, search, semanticUnavailable, syncIndex } from "../core/semantic.ts";
+import {
+  cacheRoot,
+  embedderFor,
+  type Hit,
+  readSuggestionLog,
+  search,
+  semanticUnavailable,
+  suggestionLogPath,
+  suggestionStats,
+  type SyncResult,
+  syncIndex,
+} from "../core/semantic.ts";
 import {
   canonicalPath,
   classifyPath,
@@ -145,6 +156,11 @@ function editSchema(plan: Plan, path: string, fn: Parameters<typeof editFrontmat
 
 const round = (n: number) => Math.round(n * 1000) / 1000;
 
+function skippedNote(skipped: SyncResult["skipped"]): string {
+  const list = skipped.map((s) => `${s.id} (${s.reason})`).join(", ");
+  return `${skipped.length} object(s) not indexed: ${list}; see \`o6y lint\``;
+}
+
 /** Fallback ranking without embeddings: the share of the question's words found in each object. */
 function wordMatch(store: Store, question: string, type: string | undefined, limit: number): Hit[] {
   const words = [...new Set(question.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? [])];
@@ -195,23 +211,28 @@ const COMMANDS: Record<string, Command> = {
   },
 
   search: {
-    usage: "o6y search <question> [--type T] [--limit N] [--no-rerank] [--json]",
+    usage: "o6y search <question> [--type T] [--limit N] [--min-score S] [--no-rerank] [--json]",
     summary: "find objects by meaning (Cohere embeddings + rerank; word match when semantic search is off)",
-    options: { type: { type: "string" }, limit: { type: "string" }, "no-rerank": { type: "boolean" }, ...JSON_OPT },
+    options: { type: { type: "string" }, limit: { type: "string" }, "min-score": { type: "string" }, "no-rerank": { type: "boolean" }, ...JSON_OPT },
     async run(ctx, args, o) {
       const question = args.join(" ").trim();
       if (!question) throw new UsageError("give a question to search for");
       const limit = o.limit ? Number(o.limit) : 10;
+      const minScore = o["min-score"] === undefined ? undefined : Number(o["min-score"]);
+      if (minScore !== undefined && !(minScore >= 0 && minScore <= 1)) throw new UsageError("--min-score takes a number between 0 and 1");
       const store = ctx.load();
       const embedder = embedderFor(store, ctx.env, ctx.fetch);
       let hits: Hit[];
       if (!embedder) {
         ctx.err(`o6y search: ${semanticUnavailable(store, ctx.env)}; falling back to word match`);
-        hits = wordMatch(store, question, o.type, limit);
+        hits = wordMatch(store, question, o.type, limit).filter((h) => h.score >= (minScore ?? 0));
       } else {
         const cache = cacheRoot(ctx.env);
-        await syncIndex(store, embedder, cache);
-        hits = await search(store, embedder, cache, question, { type: o.type, limit, rerank: !o["no-rerank"] });
+        const synced = await syncIndex(store, embedder, cache);
+        if (synced.skipped.length) ctx.err(`o6y search: ${skippedNote(synced.skipped)}`);
+        const rerank = !o["no-rerank"];
+        // Reranked scores are calibrated, so the store's threshold applies; similarity isn't.
+        hits = await search(store, embedder, cache, question, { type: o.type, limit, rerank, minScore: minScore ?? (rerank ? store.semantic.threshold : 0) });
       }
       if (o.json) {
         ctx.out(JSON.stringify(hits.map((h) => ({ id: h.obj.id, score: round(h.score), similarity: round(h.similarity), summary: h.obj.summary, path: h.obj.path })), null, 2));
@@ -230,7 +251,37 @@ const COMMANDS: Record<string, Command> = {
       const embedder = embedderFor(store, ctx.env, ctx.fetch);
       if (!embedder) throw new Error(semanticUnavailable(store, ctx.env)!);
       const r = await syncIndex(store, embedder, cacheRoot(ctx.env), { full: !!o.full });
-      ctx.out(`${r.total} objects indexed: ${r.embedded} embedded, ${r.removed} removed (cache: ${displayPath(cacheRoot(ctx.env))})`);
+      const lines = [`${r.total} objects indexed: ${r.embedded} embedded, ${r.removed} removed (cache: ${displayPath(cacheRoot(ctx.env))})`];
+      if (r.skipped.length) lines.push(skippedNote(r.skipped));
+      ctx.out(lines.join("\n"));
+      return 0;
+    },
+  },
+
+  suggestions: {
+    usage: "o6y suggestions [--since 7d|DATE] [--json]",
+    summary: "how often suggested objects were then opened, by score (from the local suggestion log)",
+    options: { since: { type: "string" }, ...JSON_OPT },
+    run(ctx, _args, o) {
+      const cache = cacheRoot(ctx.env);
+      const stats = suggestionStats(readSuggestionLog(cache), o.since ? new Date(parseSince(o.since)) : undefined);
+      if (o.json) {
+        ctx.out(JSON.stringify(stats, null, 2));
+        return 0;
+      }
+      if (!stats.suggestions) {
+        ctx.out(`No suggestions logged yet (${displayPath(suggestionLogPath(cache))}).`);
+        return 0;
+      }
+      const pct = (used: number, of: number) => (of ? `${Math.round((used / of) * 100)}%` : "–");
+      const lines = [
+        `${stats.suggestions} objects suggested over ${stats.sessions} session(s); ${stats.used} opened afterwards (${pct(stats.used, stats.suggestions)})`,
+        "",
+        "By rerank score:",
+        ...stats.bands.filter((b) => b.suggestions).map((b) => `  ${b.from.toFixed(2)}–${b.to.toFixed(2)}  ${pct(b.used, b.suggestions).padStart(4)} opened (${b.used}/${b.suggestions})`),
+      ];
+      if (stats.ignored.length) lines.push("", "Suggested but never opened:", ...stats.ignored.map((i) => `  ${i.id} (${i.times}×)`));
+      ctx.out(lines.join("\n"));
       return 0;
     },
   },
@@ -742,7 +793,7 @@ const COMMANDS: Record<string, Command> = {
 const GROUPS: [string, string[]][] = [
   ["Read", ["query", "show", "links", "backlinks", "index", "lint", "stats", "log", "prompt", "export"]],
   ["Write (validated as one change; --dry-run previews)", ["new", "set", "mv", "merge", "rm", "field", "type", "check"]],
-  ["Semantic search (opt-in: semantic.enabled in the root schema, CO_API_KEY)", ["search", "reindex"]],
+  ["Semantic search (opt-in: semantic.enabled in the root schema, CO_API_KEY)", ["search", "reindex", "suggestions"]],
   ["Viewer", ["view"]],
 ];
 

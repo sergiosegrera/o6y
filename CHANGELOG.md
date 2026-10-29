@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.7.1
+
+Semantic search fixes and tuning, from an eval on a 208-object store (56 relevant and 30 irrelevant prompts):
+- **Similarity floor:** new setting `semantic.minSimilarity` (default 0.16). Candidates below it never reach the reranker, which on terse queries ("flaky ci") promoted objects with similarity as low as 0.13.
+- **`o6y search` applies the threshold** when reranking, so an off-topic question returns "No matching objects." instead of five results at 0.00. `--min-score` overrides it (`--min-score 0` for the old behavior).
+- **Skipped objects are reported:** `o6y reindex` and `o6y search` name objects left out of the index (invalid frontmatter, no schema, id taken by another layer) instead of skipping them silently.
+- **Overlapping stores** no longer empty each other's index, and `reindex` counts as "removed" only ids gone from every layer.
+- **Suggestion log:** a local log of each suggestion and whether the agent then opened the object; `o6y suggestions` summarizes it by score band. User messages are logged only with `semantic.logPrompts: true`.
+- After a context compaction, objects can be suggested again.
+
 ## 0.7.0
 
 - **Semantic search (opt-in):** `semantic: { enabled: true }` in a root schema plus `CO_API_KEY` turns on Cohere embeddings and rerank.
