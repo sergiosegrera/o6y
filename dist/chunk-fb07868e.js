@@ -1,10 +1,17 @@
 #!/usr/bin/env node
 import {
+  LOG_FILE,
   Store,
+  cacheRoot,
   displayPath,
+  embedderFor,
   neighbors,
-  storeSignature
-} from "./chunk-4rjx79a1.js";
+  readSuggestionLog,
+  search,
+  semanticUnavailable,
+  storeSignature,
+  syncIndex
+} from "./chunk-pxet089h.js";
 
 // src/viewer/run.tsx
 import { spawnSync } from "node:child_process";
@@ -15,7 +22,10 @@ import { Box, Text, useApp, useInput, useWindowSize } from "ink";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 // src/viewer/model.ts
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { stringify } from "yaml";
+var plain = (line) => line.map((s) => s.text).join("");
 var typeKey = (name) => `type:${name}`;
 var WANTED_KEY = "wanted:";
 function rowKey(row) {
@@ -300,70 +310,202 @@ function renderWantedPage(store, width) {
   }
   return { lines, links, linkLines };
 }
-function linkTree(store, root, expanded) {
-  const rows = [];
-  const childrenOf = (id, parent) => {
-    const nb = neighbors(store, id);
-    const incoming = new Map(nb.in.map((e) => [e.id, e]));
-    const children = [];
-    for (const e of nb.out) {
-      const back = incoming.get(e.id);
-      if (back)
-        incoming.delete(e.id);
-      children.push(back ? { e: { ...e, via: [...new Set([...e.via, ...back.via])] }, dir: "both" } : { e, dir: "out" });
+var LOG_LINE = /^- (\S+) (create|update|delete) (.+) \((.+)\)$/;
+function parseLog(text, layer) {
+  const out = [];
+  for (const line of text.split(`
+`)) {
+    const m = LOG_LINE.exec(line);
+    const at = m ? Date.parse(m[1]) : NaN;
+    if (m && !Number.isNaN(at))
+      out.push({ at, action: m[2], target: m[3], via: m[4], layer });
+  }
+  return out;
+}
+function readActivity(layers, cache) {
+  const entries = [];
+  for (const layer of layers) {
+    try {
+      entries.push(...parseLog(readFileSync(join(layer.root, LOG_FILE), "utf8"), layer.name));
+    } catch {}
+  }
+  if (cache) {
+    for (const r of readSuggestionLog(cache)) {
+      const at = Date.parse(r.t);
+      if (Number.isNaN(at))
+        continue;
+      if (r.type === "suggest")
+        for (const h of r.hits)
+          entries.push({ at, action: "suggest", target: h.id, via: r.session, layer: "", score: h.score });
+      else
+        entries.push({ at, action: "open", target: r.id, via: r.via, layer: "" });
     }
-    for (const e of incoming.values())
-      children.push({ e, dir: "in" });
-    return children.filter((c) => c.e.id !== parent);
+  }
+  return entries.sort((a, b) => b.at - a.at);
+}
+var BATCH_MIN = 3;
+var isSuggestion = (e) => e.action === "suggest" || e.action === "open";
+function dayLabel(at, now) {
+  const d = new Date(at);
+  const days = Math.round((new Date(now).setHours(0, 0, 0, 0) - new Date(at).setHours(0, 0, 0, 0)) / 86400000);
+  if (days === 0)
+    return "Today";
+  if (days === 1)
+    return "Yesterday";
+  return d.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", ...days > 300 ? { year: "numeric" } : {} });
+}
+function activityRows(entries, open, query = "", now = new Date) {
+  const q = query.toLowerCase();
+  const shown = q ? entries.filter((e) => e.target.toLowerCase().includes(q) || e.via.toLowerCase().includes(q)) : entries;
+  const groups = [];
+  for (const e of shown) {
+    const g = groups[groups.length - 1];
+    const head = g?.[0];
+    if (head && head.at === e.at && head.via === e.via && isSuggestion(head) === isSuggestion(e))
+      g.push(e);
+    else
+      groups.push([e]);
+  }
+  const rows = [];
+  const seen = new Map;
+  const unique = (base) => {
+    const n = seen.get(base) ?? 0;
+    seen.set(base, n + 1);
+    return n ? `${base}#${n}` : base;
   };
-  const visit = (id, key, depth, dir, via, last, ancestors) => {
-    const cycle = ancestors.includes(id);
-    const children = cycle ? [] : childrenOf(id, ancestors[ancestors.length - 1]);
-    const isOpen = expanded.has(key) && children.length > 0;
-    rows.push({
-      key,
-      id,
-      depth,
-      dir,
-      via,
-      missing: !store.objects.has(id),
-      cycle,
-      expandable: children.length > 0,
-      expanded: isOpen,
-      last
+  let day;
+  for (const g of groups) {
+    const label = dayLabel(g[0].at, now);
+    if (day?.label !== label) {
+      day = { kind: "day", key: unique(`day:${label}`), label, count: 0 };
+      rows.push(day);
+    }
+    day.count += g.length;
+    const entryRow = (e, nested) => ({
+      kind: "entry",
+      key: unique(`${e.at}|${e.action}|${e.target}|${e.via}`),
+      entry: e,
+      nested
     });
-    if (!isOpen)
-      return;
-    const next = [...ancestors, id];
-    children.forEach(({ e, dir: d }, i) => visit(e.id, `${key}>${d}:${e.id}`, depth + 1, d, e.via, [...last, i === children.length - 1], next));
-  };
-  visit(root, root, 0, "root", [], [true], []);
+    if (g.length < BATCH_MIN) {
+      for (const e of g)
+        rows.push(entryRow(e, false));
+      continue;
+    }
+    const key = unique(`batch:${g[0].at}|${g[0].via}|${isSuggestion(g[0]) ? "s" : "c"}`);
+    const isOpen = open.has(key);
+    rows.push({ kind: "batch", key, entries: g, open: isOpen });
+    if (isOpen)
+      for (const e of g)
+        rows.push(entryRow(e, true));
+  }
   return rows;
 }
-function treeLine(store, node, width, selected, changed) {
-  let guides = "";
-  for (let d = 1;d < node.depth; d++)
-    guides += node.last[d] ? "   " : "│  ";
-  if (node.depth > 0)
-    guides += node.last[node.depth] ? "└─ " : "├─ ";
-  const marker = node.cycle ? "↺ " : node.expandable ? node.expanded ? "▾ " : "▸ " : "  ";
-  const arrow = { root: "", out: "→ ", in: "← ", both: "↔ " }[node.dir];
-  const color = node.missing ? "red" : node.dir === "root" ? "green" : "cyan";
-  const used = guides.length + marker.length + arrow.length;
-  const id = truncate(node.id, Math.max(4, width - used));
+var ACTION_MARK = {
+  create: { mark: "+", color: "green", verb: "created" },
+  update: { mark: "~", color: "yellow", verb: "updated" },
+  delete: { mark: "−", color: "red", verb: "deleted" },
+  suggest: { mark: "◆", color: "cyan", verb: "suggested" },
+  open: { mark: "↗", color: "blue", verb: "opened" }
+};
+var clock = (at) => new Date(at).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+var entrySource = (e) => e.action === "suggest" ? (e.score ?? 0).toFixed(2) : e.via;
+function batchSummary(entries) {
+  const counts = new Map;
+  for (const e of entries)
+    counts.set(e.action, (counts.get(e.action) ?? 0) + 1);
+  return [...counts].map(([a, n]) => `${ACTION_MARK[a].mark}${n}`).join(" ");
+}
+function activityLine(store, row, width, selected, changed) {
+  if (row.kind === "day") {
+    return [{ text: row.label, bold: true, color: "magenta" }, { text: ` ${row.count}`, dim: true }];
+  }
+  if (row.kind === "batch") {
+    const head = row.entries[0];
+    const what = isSuggestion(head) ? `${row.entries.length} suggested` : `${row.entries.length} changes`;
+    const left = `${clock(head.at)} ${row.open ? "▾" : "▸"} ${what} `;
+    const right = ` ${batchSummary(row.entries)} · ${isSuggestion(head) ? "suggestions" : head.via}`;
+    return [
+      { text: left, bold: selected, inverse: selected, color: selected ? "cyan" : undefined },
+      { text: truncate(right, Math.max(0, width - left.length)), dim: true }
+    ];
+  }
+  const e = row.entry;
+  const a = ACTION_MARK[e.action];
+  const time = row.nested ? "   " : clock(e.at);
+  const missing = !e.target.includes(" ") && e.target.includes("/") && !store.objects.has(e.target);
+  const source = ` ${entrySource(e)}`;
+  const mark = changed?.has(e.target) ? " •" : "";
+  const nameWidth = Math.max(4, width - time.length - 3 - mark.length - (width > 34 ? source.length : 0));
   const segs = [
-    { text: guides, dim: true },
-    { text: marker, color: node.cycle ? "gray" : "yellow" },
-    { text: arrow, dim: true },
-    { text: id, color, bold: selected || node.dir === "root", inverse: selected, dim: node.cycle }
+    { text: `${time} `, dim: true },
+    { text: `${a.mark} `, color: a.color },
+    { text: truncate(e.target, nameWidth), color: missing ? "red" : e.target.includes(" ") ? "magenta" : selected ? "cyan" : undefined, bold: selected, inverse: selected }
   ];
-  if (changed?.has(node.id))
-    segs.push({ text: " •", color: "green" });
-  const room = width - used - id.length - (changed?.has(node.id) ? 2 : 0);
-  const summary = node.cycle ? "(already above)" : store.objects.get(node.id)?.summary ?? "not written yet";
-  if (room > 12)
-    segs.push({ text: truncate(` — ${summary}`, room), dim: true });
+  if (mark)
+    segs.push({ text: mark, color: "green" });
+  const room = width - plain(segs).length;
+  if (room >= source.length)
+    segs.push({ text: source.padStart(room), dim: true });
   return segs;
+}
+function activityTarget(store, row) {
+  if (row.kind !== "entry")
+    return {};
+  const t = row.entry.target;
+  if (t.startsWith("schema "))
+    return store.types.has(t.slice(7)) ? { type: t.slice(7) } : {};
+  return store.objects.has(t) ? { object: t } : {};
+}
+function renderActivityPage(store, row, width, changed) {
+  const links = [];
+  const linkLines = [];
+  const lines = [];
+  const stamp = (at) => new Date(at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "medium" });
+  const describeEntry = (e) => {
+    const a = ACTION_MARK[e.action];
+    return [{ text: `${a.mark} ${a.verb}`, color: a.color }, { text: ` ${stamp(e.at)} · ${e.action === "suggest" ? `score ${entrySource(e)}` : e.action === "open" ? `via ${e.via}` : e.via}${e.layer ? ` · ${e.layer}` : ""}`, dim: true }];
+  };
+  if (row.kind === "entry") {
+    const { object, type } = activityTarget(store, row);
+    const page = object ? renderPage(store, object, width, changed) : type ? renderTypePage(store, type, width) : undefined;
+    const head = [describeEntry(row.entry), []];
+    if (page)
+      return { lines: [...head, ...page.lines], links: page.links, linkLines: page.linkLines.map((n) => n + head.length) };
+    lines.push(...head, [{ text: row.entry.target, bold: true, color: "red" }]);
+    lines.push([{ text: row.entry.action === "delete" || !store.objects.has(row.entry.target) ? "No longer in the store." : "", dim: true }]);
+    return { lines, links, linkLines };
+  }
+  const entries = row.kind === "batch" ? row.entries : [];
+  if (row.kind === "day")
+    lines.push([{ text: row.label, bold: true, color: "magenta" }, { text: ` ${row.count} events`, dim: true }]);
+  else {
+    const head = entries[0];
+    lines.push([{ text: isSuggestion(head) ? `${entries.length} suggestions` : `${entries.length} changes`, bold: true }, { text: ` ${stamp(head.at)} · ${isSuggestion(head) ? "suggestions" : head.via}`, dim: true }], []);
+    for (const e of entries) {
+      const a = ACTION_MARK[e.action];
+      const exists = store.objects.has(e.target);
+      if (exists) {
+        links.push(e.target);
+        linkLines.push(lines.length);
+      }
+      const summary = store.objects.get(e.target)?.summary;
+      lines.push([
+        { text: `${a.mark} `, color: a.color },
+        { text: e.target, color: exists ? "cyan" : "red" },
+        { text: truncate(summary ? ` — ${summary}` : e.action === "suggest" ? ` ${entrySource(e)}` : "", Math.max(0, width - e.target.length - 2)), dim: true }
+      ]);
+    }
+  }
+  return { lines, links, linkLines };
+}
+function searchLine(store, hit, width, selected, threshold) {
+  const score = `${hit.score.toFixed(2)} `;
+  const below = hit.score < threshold;
+  return [
+    { text: score, color: below ? "gray" : "green" },
+    { text: truncate(hit.id, Math.max(4, width - score.length)), color: selected ? "cyan" : undefined, bold: selected, inverse: selected, dim: below && !selected }
+  ];
 }
 
 // src/viewer/watch.ts
@@ -399,7 +541,8 @@ function watchStores(layers, onChange, pollMs = 1500) {
 }
 
 // src/viewer/app.tsx
-import { jsx, jsxs, Fragment } from "react/jsx-runtime";
+import { jsx, jsxs } from "react/jsx-runtime";
+var SEARCH_LIMIT = 20;
 var CHANGED_MS = 6000;
 function LineView({ line }) {
   return /* @__PURE__ */ jsx(Text, {
@@ -433,9 +576,12 @@ function App({ layers, initial, onEdit }) {
   const [filter, setFilter] = useState(initial.filter);
   const [searching, setSearching] = useState(false);
   const [open, setOpen] = useState(() => new Set(initial.open ?? []));
-  const [expanded, setExpanded] = useState(new Set);
-  const [treeCursor, setTreeCursor] = useState();
-  const treeMemory = useRef(new Map);
+  const [sideKey, setSideKey] = useState(initial.sideKey);
+  const [batches, setBatches] = useState(() => new Set(initial.batches ?? []));
+  const [asking, setAsking] = useState(false);
+  const [question, setQuestion] = useState(initial.results?.query ?? "");
+  const [results, setResults] = useState(initial.results?.status === "done" ? initial.results : undefined);
+  const searchRun = useRef(0);
   const lastIndex = useRef(0);
   const reload = useCallback(() => {
     setStore((prev) => {
@@ -470,13 +616,13 @@ function App({ layers, initial, onEdit }) {
   const bodyHeight = Math.max(3, rows - 2);
   const innerHeight = bodyHeight - 2;
   const narrow = columns < 80;
-  const leftWidth = narrow ? columns - 2 : clamp(Math.floor(columns * 0.3), 24, 44);
+  const leftWidth = narrow ? columns - 2 : view === "activity" ? clamp(Math.floor(columns * 0.4), 30, 56) : clamp(Math.floor(columns * 0.3), 24, 44);
   const rightWidth = narrow ? Math.max(10, columns - 4) : Math.max(10, columns - leftWidth - 6);
   const tree = useMemo(() => treeRows(store, filter, open), [store, filter, open]);
   const keys = useMemo(() => tree.map(rowKey), [tree]);
   let cursor = current ? keys.indexOf(current) : -1;
   const exists = (key) => key.startsWith("type:") ? store.types.has(key.slice(5)) : key === WANTED_KEY ? store.wanted.size > 0 : store.objects.has(key) || store.wanted.has(key);
-  const selected = current && exists(current) && (cursor >= 0 || view === "tree") ? current : undefined;
+  const selected = current && exists(current) && cursor >= 0 ? current : undefined;
   if (!selected)
     cursor = keys.length ? clamp(lastIndex.current, 0, keys.length - 1) : -1;
   const selectedKey = selected ?? (cursor >= 0 ? keys[cursor] : undefined);
@@ -498,7 +644,21 @@ function App({ layers, initial, onEdit }) {
       next.delete(key);
     return next;
   });
+  const activity = useMemo(() => readActivity(layers, cacheRoot(process.env)), [layers, loadedAt]);
+  const actRows = useMemo(() => activityRows(activity, batches), [activity, batches]);
+  const hits = results?.hits ?? [];
+  const sideKeys = useMemo(() => view === "activity" ? actRows.filter((r) => r.kind !== "day").map((r) => r.key) : view === "search" ? hits.map((h) => h.key) : [], [view, actRows, hits]);
+  const sideIndex = sideKey && sideKeys.includes(sideKey) ? sideKeys.indexOf(sideKey) : sideKeys.length ? 0 : -1;
+  const sideSelected = sideIndex >= 0 ? sideKeys[sideIndex] : undefined;
+  const actRow = view === "activity" ? actRows.find((r) => r.key === sideSelected) : undefined;
+  const hit = view === "search" ? hits.find((h) => h.key === sideSelected) : undefined;
+  const pageObject = view === "browse" ? id : view === "activity" ? actRow ? activityTarget(store, actRow).object : undefined : hit?.id;
+  const threshold = store.semantic.threshold;
   const page = useMemo(() => {
+    if (view === "activity")
+      return actRow ? renderActivityPage(store, actRow, rightWidth, changedIds) : undefined;
+    if (view === "search")
+      return hit && store.objects.has(hit.id) ? renderPage(store, hit.id, rightWidth, changedIds) : undefined;
     if (!selectedKey)
       return;
     if (selectedKey.startsWith("type:"))
@@ -506,11 +666,7 @@ function App({ layers, initial, onEdit }) {
     if (selectedKey === WANTED_KEY)
       return renderWantedPage(store, rightWidth);
     return renderPage(store, selectedKey, rightWidth, changedIds);
-  }, [store, selectedKey, rightWidth, changedIds]);
-  const openKeys = useMemo(() => id && !expanded.size ? new Set([id]) : expanded, [id, expanded]);
-  const nodes = useMemo(() => id && view === "tree" ? linkTree(store, id, openKeys) : [], [store, id, openKeys, view]);
-  const nodeIndex = Math.max(0, nodes.findIndex((n) => n.key === treeCursor));
-  const node = nodes[nodeIndex];
+  }, [store, view, actRow, hit, selectedKey, rightWidth, changedIds]);
   const go = (target, push = true) => {
     if (target === selectedKey)
       return;
@@ -519,13 +675,49 @@ function App({ layers, initial, onEdit }) {
     setCurrent(target);
     setLinkIdx(0);
     setScroll(0);
-    if (id)
-      treeMemory.current.set(id, { expanded, cursor: treeCursor });
-    const saved = treeMemory.current.get(target);
-    setExpanded(saved?.expanded ?? new Set);
-    setTreeCursor(saved?.cursor);
     if (filter && !treeRows(store, filter).some((r) => rowKey(r) === target))
       setFilter("");
+  };
+  const follow = (target) => {
+    if (view !== "browse") {
+      setView("browse");
+      setFocus(narrow ? "page" : "list");
+    }
+    go(target);
+  };
+  const moveSide = (delta) => {
+    if (!sideKeys.length)
+      return;
+    const next = sideKeys[clamp(sideIndex + delta, 0, sideKeys.length - 1)];
+    if (next !== sideSelected) {
+      setSideKey(next);
+      setLinkIdx(0);
+      setScroll(0);
+    }
+  };
+  const runSearch = async (q) => {
+    const run = ++searchRun.current;
+    setView("search");
+    setFocus("list");
+    setSideKey(undefined);
+    setScroll(0);
+    const why = semanticUnavailable(store, process.env);
+    if (why)
+      return setResults({ query: q, status: "error", message: why, hits: [] });
+    setResults({ query: q, status: "running", hits: [] });
+    try {
+      const embedder = embedderFor(store, process.env);
+      const cache = cacheRoot(process.env);
+      await syncIndex(store, embedder, cache);
+      const found = await search(store, embedder, cache, q, { limit: SEARCH_LIMIT, minScore: 0 });
+      if (run !== searchRun.current)
+        return;
+      setResults({ query: q, status: "done", hits: found.map((h) => ({ key: h.obj.id, id: h.obj.id, score: h.score, similarity: h.similarity })) });
+    } catch (err) {
+      if (run !== searchRun.current)
+        return;
+      setResults({ query: q, status: "error", message: err instanceof Error ? err.message : String(err), hits: [] });
+    }
   };
   const back = () => {
     const prev = history[history.length - 1];
@@ -561,13 +753,26 @@ function App({ layers, initial, onEdit }) {
     return first >= 0 ? first : undefined;
   })();
   const edit = () => {
-    const obj = id ? store.objects.get(id) : undefined;
+    const obj = pageObject ? store.objects.get(pageObject) : undefined;
     if (!obj)
       return;
-    onEdit(obj.path, { current: id, view, history, filter, open: [...open] });
+    onEdit(obj.path, { current, view, history, filter, open: [...open], sideKey: sideSelected, batches: [...batches], results });
     exit();
   };
   useInput((input, key) => {
+    if (asking) {
+      if (key.escape)
+        setAsking(false);
+      else if (key.return) {
+        setAsking(false);
+        if (question.trim())
+          runSearch(question.trim());
+      } else if (key.backspace || key.delete)
+        setQuestion((q) => q.slice(0, -1));
+      else if (input && !key.ctrl && !key.meta)
+        setQuestion((q) => q + input);
+      return;
+    }
     if (searching) {
       if (key.escape) {
         setSearching(false);
@@ -592,8 +797,14 @@ function App({ layers, initial, onEdit }) {
         setFilter(input.slice(1));
         return;
       }
-      if (/^[jk]+$/.test(input) && view === "browse" && focus === "list") {
-        return moveList([...input].reduce((n2, ch) => n2 + (ch === "j" ? 1 : -1), 0));
+      if (input.startsWith("?")) {
+        setAsking(true);
+        setQuestion(input.slice(1));
+        return;
+      }
+      if (/^[jk]+$/.test(input) && focus === "list") {
+        const delta = [...input].reduce((n2, ch) => n2 + (ch === "j" ? 1 : -1), 0);
+        return view === "browse" ? moveList(delta) : moveSide(delta);
       }
       input = input[input.length - 1];
     }
@@ -605,65 +816,59 @@ function App({ layers, initial, onEdit }) {
       setFocus("list");
       return;
     }
-    if (input === "t" || input === "g" || input === "2") {
-      if (view !== "tree" && !id)
-        return;
-      return setView(view === "tree" && input !== "2" ? "browse" : "tree");
+    if (input === "?") {
+      setAsking(true);
+      setQuestion("");
+      return;
     }
+    const switchTo = (v) => {
+      if (v === view)
+        return;
+      setView(v);
+      setFocus("list");
+      setScroll(0);
+      setLinkIdx(0);
+    };
     if (input === "1")
-      return setView("browse");
+      return switchTo("browse");
+    if (input === "2" || input === "a")
+      return switchTo("activity");
+    if (input === "3" && results)
+      return switchTo("search");
     if (input === "e")
       return edit();
     if (input === "r")
       return reload();
     if (input === "b" || key.backspace || key.delete)
       return back();
-    if (view === "tree") {
-      const toggle2 = (key2, open2) => setExpanded((prev) => {
-        const next = new Set(prev.size || !id ? prev : [id]);
-        if (open2)
-          next.add(key2);
-        else
-          next.delete(key2);
-        return next;
-      });
-      if (!node)
-        return key.escape ? setView("browse") : undefined;
-      if (key.downArrow || input === "j")
-        setTreeCursor(nodes[Math.min(nodes.length - 1, nodeIndex + 1)].key);
-      else if (key.upArrow || input === "k")
-        setTreeCursor(nodes[Math.max(0, nodeIndex - 1)].key);
-      else if (key.rightArrow || input === "l") {
-        if (node.expandable && !node.expanded)
-          toggle2(node.key, true);
-        else if (node.expanded)
-          setTreeCursor(nodes[nodeIndex + 1]?.key);
-      } else if (key.leftArrow || input === "h") {
-        if (node.expanded)
-          toggle2(node.key, false);
-        else if (node.depth > 0)
-          setTreeCursor(node.key.slice(0, node.key.lastIndexOf(">")));
-      } else if (input === " ") {
-        if (node.expandable)
-          toggle2(node.key, !node.expanded);
-      } else if (key.return) {
-        if (node.depth > 0)
-          go(node.id);
-      } else if (input === "o" || key.tab) {
-        if (node.id !== id)
-          go(node.id);
-        setView("browse");
-        if (narrow)
-          setFocus("page");
-      } else if (input === "x") {
-        setExpanded(new Set);
-        setTreeCursor(undefined);
-      } else if (key.escape)
-        setView("browse");
-      return;
-    }
+    if (input === "o" && pageObject && view !== "browse")
+      return follow(pageObject);
     if (key.tab)
       return setFocus(focus === "list" ? "page" : "list");
+    if (view !== "browse" && focus === "list") {
+      if (key.downArrow || input === "j")
+        moveSide(1);
+      else if (key.upArrow || input === "k")
+        moveSide(-1);
+      else if (key.pageDown || input === " " || key.ctrl && input === "d")
+        moveSide(innerHeight - 2);
+      else if (key.pageUp || key.ctrl && input === "u")
+        moveSide(-(innerHeight - 2));
+      else if (actRow?.kind === "batch" && (key.return || key.rightArrow || input === "l" || (key.leftArrow || input === "h") && actRow.open)) {
+        setBatches((prev) => {
+          const next = new Set(prev);
+          if (next.has(actRow.key))
+            next.delete(actRow.key);
+          else
+            next.add(actRow.key);
+          return next;
+        });
+      } else if (key.return || key.rightArrow || input === "l")
+        setFocus("page");
+      else if (key.escape)
+        switchTo("browse");
+      return;
+    }
     if (focus === "list" && !filter) {
       const header2 = row && (row.kind === "type" || row.kind === "wanted-header") ? row : undefined;
       const headerKey = header2 ? rowKey(header2) : undefined;
@@ -731,7 +936,7 @@ function App({ layers, initial, onEdit }) {
       setLinkIdx(i);
       ensureVisible(page.linkLines[i]);
     } else if (key.return && activeLink !== undefined)
-      go(page.links[activeLink]);
+      follow(page.links[activeLink]);
   });
   const errors = store.errors().length;
   const warnings = store.issues.filter((i) => i.severity === "warning").length;
@@ -762,10 +967,15 @@ function App({ layers, initial, onEdit }) {
               children: narrow ? " 1 " : " 1 browse "
             }),
             /* @__PURE__ */ jsx(Text, {
-              inverse: view === "tree",
-              bold: view === "tree",
-              children: narrow ? " 2 " : " 2 tree "
+              inverse: view === "activity",
+              bold: view === "activity",
+              children: narrow ? " 2 " : " 2 activity "
             }),
+            results ? /* @__PURE__ */ jsx(Text, {
+              inverse: view === "search",
+              bold: view === "search",
+              children: narrow ? " 3 " : " 3 search "
+            }) : null,
             narrow ? null : /* @__PURE__ */ jsxs(Text, {
               dimColor: true,
               children: [
@@ -867,8 +1077,27 @@ function App({ layers, initial, onEdit }) {
       })
     ]
   });
-  const footerText = searching ? null : narrow ? view === "tree" ? "↑↓ · →← open/close · ⏎ root · o page · b" : focus === "list" ? "↑↓ · ⏎→ open · ← close · x/X all · [ ] · t · /" : "↑↓␣ scroll · n/N link · ⏎ go · ← list · e" : view === "tree" ? "↑↓ move  →/l expand  ←/h collapse  space toggle  enter make root  o open page  x collapse all  b back  q quit" : focus === "list" ? "↑↓ move  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next type  tab page  t tree  b back  / search  e edit  q" : "↑↓/j/k/space scroll  n/N next/prev link  enter follow  ←/esc list  t tree  b back  e edit  q quit";
-  const footer = searching ? /* @__PURE__ */ jsxs(Text, {
+  const footerText = searching ? null : narrow ? view === "browse" ? focus === "list" ? "↑↓ · ⏎→ open · ← close · x/X all · [ ] · 2 activity · / ?" : "↑↓␣ scroll · n/N link · ⏎ go · ← list · e" : focus === "list" ? "↑↓ · ⏎→ page · o open · 1 browse · ?" : "↑↓␣ scroll · n/N link · ⏎ go · ← list · o · e" : view === "browse" ? focus === "list" ? "↑↓ move  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next type  tab page  2 activity  / filter  ? search  b back  e edit  q" : "↑↓/j/k/space scroll  n/N next/prev link  enter follow  ←/esc list  2 activity  ? search  b back  e edit  q quit" : focus === "list" ? `↑↓ move  ⏎/→ ${view === "activity" ? "expand batch / page" : "page"}  o open in browse  tab page  1 browse  ${view === "activity" ? "" : "2 activity  "}? search  e edit  q` : "↑↓/j/k/space scroll  n/N next/prev link  enter follow  ←/esc list  o open in browse  e edit  q quit";
+  const footer = asking ? /* @__PURE__ */ jsxs(Text, {
+    wrap: "truncate",
+    children: [
+      /* @__PURE__ */ jsx(Text, {
+        color: "cyan",
+        children: "? "
+      }),
+      /* @__PURE__ */ jsx(Text, {
+        children: question
+      }),
+      /* @__PURE__ */ jsx(Text, {
+        inverse: true,
+        children: " "
+      }),
+      /* @__PURE__ */ jsx(Text, {
+        dimColor: true,
+        children: narrow ? "" : "  search by meaning · enter run · esc cancel"
+      })
+    ]
+  }) : searching ? /* @__PURE__ */ jsxs(Text, {
     wrap: "truncate",
     children: [
       /* @__PURE__ */ jsx(Text, {
@@ -896,19 +1125,65 @@ function App({ layers, initial, onEdit }) {
     dimColor: true,
     wrap: "truncate",
     children: [
-      filter ? /* @__PURE__ */ jsx(Text, {
+      filter && view === "browse" ? /* @__PURE__ */ jsx(Text, {
         color: "yellow",
         children: narrow ? `/${filter} ` : `filter: ${filter} (esc clears)  `
       }) : null,
       footerText
     ]
   });
-  if (view === "tree") {
-    const detailLines = rows >= 22 ? 3 : rows >= 14 ? 2 : 0;
-    const treeHeight = Math.max(1, innerHeight - (detailLines ? detailLines + 1 : 0));
-    const start = clamp(nodeIndex - Math.floor(treeHeight / 2), 0, Math.max(0, nodes.length - treeHeight));
-    const detail = node ? store.objects.get(node.id) : undefined;
-    const parentId = node && node.depth > 0 ? nodes.find((n) => n.key === node.key.slice(0, node.key.lastIndexOf(">")))?.id : undefined;
+  const visibleLines = page?.lines.slice(scroll, scroll + innerHeight) ?? [];
+  const activeLinkLine = focus === "page" && activeLink !== undefined ? page.linkLines[activeLink] : undefined;
+  const pagePane = narrow && focus === "list" ? null : /* @__PURE__ */ jsx(Box, {
+    flexDirection: "column",
+    flexGrow: 1,
+    borderStyle: "round",
+    borderColor: focus === "page" ? "cyan" : "gray",
+    paddingX: 1,
+    children: visibleLines.map((line, i) => {
+      const n = scroll + i;
+      return n === activeLinkLine ? /* @__PURE__ */ jsx(LineView, {
+        line: line.map((s) => ({ ...s, inverse: true }))
+      }, n) : /* @__PURE__ */ jsx(LineView, {
+        line
+      }, n);
+    })
+  });
+  if (view !== "browse") {
+    const w = leftWidth;
+    const selectedOnList = focus === "list";
+    let lines;
+    let selectedLine = 0;
+    if (view === "activity") {
+      lines = actRows.map((r) => ({ key: r.key, line: activityLine(store, r, w, selectedOnList && r.key === sideSelected, changedIds) }));
+      selectedLine = Math.max(0, actRows.findIndex((r) => r.key === sideSelected));
+      if (!actRows.length)
+        lines = [{ key: "empty", line: [{ text: " no activity logged yet", dim: true }] }];
+    } else {
+      const head = [{ text: truncate(`? ${results?.query ?? ""}`, w), color: "cyan", bold: true }];
+      lines = [{ key: "query", line: head }];
+      if (results?.status === "running")
+        lines.push({ key: "status", line: [{ text: " searching…", dim: true }] });
+      else if (results?.status === "error") {
+        lines.push(...wrap(results.message ?? "search failed", w).map((t, i) => ({ key: `err${i}`, line: [{ text: t, color: "red" }] })));
+      } else if (!hits.length)
+        lines.push({ key: "status", line: [{ text: " no results", dim: true }] });
+      let drewThreshold = false;
+      hits.forEach((h, i) => {
+        if (!drewThreshold && h.score < threshold) {
+          drewThreshold = true;
+          const label = ` threshold ${threshold.toFixed(2)} `;
+          const side = Math.max(0, w - label.length);
+          lines.push({ key: "threshold", line: [{ text: `${"─".repeat(Math.floor(side / 2))}${label}${"─".repeat(Math.ceil(side / 2))}`, color: "yellow", dim: true }] });
+        }
+        if (h.key === sideSelected)
+          selectedLine = lines.length;
+        lines.push({ key: h.key, line: searchLine(store, h, w, selectedOnList && h.key === sideSelected, threshold) });
+        if (i === hits.length - 1 && !drewThreshold && hits.length)
+          lines.push({ key: "all-above", line: [{ text: ` all above threshold ${threshold.toFixed(2)}`, dim: true }] });
+      });
+    }
+    const start = clamp(selectedLine - Math.floor(innerHeight / 2), 0, Math.max(0, lines.length - innerHeight));
     return /* @__PURE__ */ jsxs(Box, {
       flexDirection: "column",
       width: columns,
@@ -916,64 +1191,20 @@ function App({ layers, initial, onEdit }) {
       children: [
         header,
         /* @__PURE__ */ jsxs(Box, {
-          flexDirection: "column",
-          borderStyle: "round",
-          borderColor: "cyan",
           height: bodyHeight,
-          paddingX: 1,
           children: [
-            /* @__PURE__ */ jsxs(Box, {
+            narrow && focus === "page" ? null : /* @__PURE__ */ jsx(Box, {
               flexDirection: "column",
-              height: treeHeight,
-              children: [
-                nodes.slice(start, start + treeHeight).map((n, i) => /* @__PURE__ */ jsx(LineView, {
-                  line: treeLine(store, n, columns - 4, start + i === nodeIndex, changedIds)
-                }, n.key)),
-                !nodes.length ? /* @__PURE__ */ jsx(Text, {
-                  dimColor: true,
-                  children: "Empty store."
-                }) : null
-              ]
+              width: leftWidth + 2,
+              flexShrink: 0,
+              borderStyle: "round",
+              borderColor: focus === "list" ? "cyan" : "gray",
+              paddingX: 0,
+              children: lines.slice(start, start + innerHeight).map((l) => /* @__PURE__ */ jsx(LineView, {
+                line: l.line
+              }, l.key))
             }),
-            detailLines && node ? /* @__PURE__ */ jsxs(Fragment, {
-              children: [
-                /* @__PURE__ */ jsx(Text, {
-                  dimColor: true,
-                  children: "─".repeat(Math.max(0, columns - 4))
-                }),
-                /* @__PURE__ */ jsxs(Text, {
-                  wrap: "truncate",
-                  children: [
-                    /* @__PURE__ */ jsx(Text, {
-                      bold: true,
-                      color: detail ? "cyan" : "red",
-                      children: node.id
-                    }),
-                    parentId ? /* @__PURE__ */ jsxs(Text, {
-                      dimColor: true,
-                      children: [
-                        " ",
-                        { out: "← linked from", in: "→ links to", both: "↔ linked with", root: "" }[node.dir],
-                        " ",
-                        parentId,
-                        " via ",
-                        node.via.join(", ")
-                      ]
-                    }) : null
-                  ]
-                }),
-                /* @__PURE__ */ jsx(Text, {
-                  wrap: "truncate",
-                  italic: true,
-                  children: detail ? detail.summary : "wanted page: linked but not written yet"
-                }),
-                detailLines > 2 ? /* @__PURE__ */ jsx(Text, {
-                  dimColor: true,
-                  wrap: "truncate",
-                  children: detail ? detail.body.replace(/\s+/g, " ").trim() : ""
-                }) : null
-              ]
-            }) : null
+            pagePane
           ]
         }),
         footer
@@ -983,8 +1214,6 @@ function App({ layers, initial, onEdit }) {
   const listStart = clamp(cursor - Math.floor(innerHeight / 2), 0, Math.max(0, tree.length - innerHeight));
   const visibleRows = tree.slice(listStart, listStart + innerHeight);
   const multiLayer = layers.length > 1;
-  const visibleLines = page?.lines.slice(scroll, scroll + innerHeight) ?? [];
-  const activeLinkLine = focus === "page" && activeLink !== undefined ? page.linkLines[activeLink] : undefined;
   return /* @__PURE__ */ jsxs(Box, {
     flexDirection: "column",
     width: columns,
@@ -1081,21 +1310,7 @@ function App({ layers, initial, onEdit }) {
               })
             ]
           }),
-          narrow && focus === "list" ? null : /* @__PURE__ */ jsx(Box, {
-            flexDirection: "column",
-            flexGrow: 1,
-            borderStyle: "round",
-            borderColor: focus === "page" ? "cyan" : "gray",
-            paddingX: 1,
-            children: visibleLines.map((line, i) => {
-              const n = scroll + i;
-              return n === activeLinkLine ? /* @__PURE__ */ jsx(LineView, {
-                line: line.map((s) => ({ ...s, inverse: true }))
-              }, n) : /* @__PURE__ */ jsx(LineView, {
-                line
-              }, n);
-            })
-          })
+          pagePane
         ]
       }),
       footer

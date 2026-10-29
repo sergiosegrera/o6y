@@ -3,7 +3,25 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { makeLayers, Store } from "../src/core/store.ts";
-import { joinParagraphs, linkTree, renderTypePage, renderWantedPage, rowKey, typeKey, WANTED_KEY, neighbors, plain, renderPage, treeLine, treeRows, wrap } from "../src/viewer/model.ts";
+import {
+  activityLine,
+  activityRows,
+  joinParagraphs,
+  neighbors,
+  parseLog,
+  plain,
+  readActivity,
+  renderActivityPage,
+  renderPage,
+  renderTypePage,
+  renderWantedPage,
+  rowKey,
+  searchLine,
+  treeRows,
+  typeKey,
+  WANTED_KEY,
+  wrap,
+} from "../src/viewer/model.ts";
 
 let tmp: string;
 let root: string;
@@ -72,35 +90,103 @@ test("renderPage: fields, joined body, links and backlinks", () => {
   expect(plain(page.lines[page.linkLines[2]!]!)).toStartWith("← note/b");
 });
 
-test("linkTree expands links then backlinks, marks cycles, draws guides", () => {
-  const store = load();
-  const collapsed = linkTree(store, "note/a", new Set());
-  expect(collapsed.map((n) => [n.id, n.expandable, n.expanded])).toEqual([["note/a", true, false]]);
+const at = (iso: string) => Date.parse(iso);
 
-  // a ↔ b (a links b via `related`, b links a in its body); a → c → ghost
-  const open = linkTree(store, "note/a", new Set(["note/a", "note/a>out:note/c", "note/a>both:note/b"]));
-  expect(open.map((n) => `${"  ".repeat(n.depth)}${n.dir}:${n.id}`)).toEqual([
-    "root:note/a",
-    "  both:note/b",
-    "  out:note/c",
-    "    out:note/ghost",
+test("parseLog reads log.md lines and skips anything else", () => {
+  const log = [
+    "# o6y log",
+    "",
+    "- 2026-10-29T14:02:11Z update note/a (edit)",
+    "- 2026-10-29T14:05:40Z create schema note (o6y field add)",
+    "- not a log line",
+    "- 2026-10-29T14:06:00Z delete note/old-thing (o6y mv)",
+  ].join("\n");
+  expect(parseLog(log, "global")).toEqual([
+    { at: at("2026-10-29T14:02:11Z"), action: "update", target: "note/a", via: "edit", layer: "global" },
+    { at: at("2026-10-29T14:05:40Z"), action: "create", target: "schema note", via: "o6y field add", layer: "global" },
+    { at: at("2026-10-29T14:06:00Z"), action: "delete", target: "note/old-thing", via: "o6y mv", layer: "global" },
   ]);
-  expect(open[1]!.via).toEqual(["related", "body"]);
-  expect(open[1]!.expandable).toBe(false); // its only neighbor is the parent
-  expect(open.find((n) => n.id === "note/ghost")!.missing).toBe(true);
+});
 
-  const lines = open.map((n) => plain(treeLine(store, n, 60, false)));
-  expect(lines[0]).toBe("▾ note/a — A");
-  expect(lines[1]).toBe("├─   ↔ note/b — B");
-  expect(lines[2]).toBe("└─ ▾ → note/c — C");
-  expect(lines[3]).toBe("   └─   → note/ghost — not written yet");
+test("readActivity merges every layer's log with the suggestion log, newest first", () => {
+  put("log.md", "- 2026-10-28T09:00:00Z create note/a (write)\n- 2026-10-29T10:00:00Z update note/b (edit)\n");
+  const cache = join(tmp, "cache");
+  mkdirSync(cache, { recursive: true });
+  writeFileSync(
+    join(cache, "suggestions.jsonl"),
+    [
+      JSON.stringify({ type: "suggest", t: "2026-10-29T11:00:00Z", session: "s1", turn: 1, hits: [{ id: "note/c", score: 0.71, similarity: 0.4 }] }),
+      JSON.stringify({ type: "use", t: "2026-10-29T11:01:00Z", session: "s1", turn: 1, id: "note/c", via: "read" }),
+    ].join("\n"),
+  );
+  const entries = readActivity(makeLayers(root, join(tmp, "proj")), cache);
+  expect(entries.map((e) => `${e.action} ${e.target}`)).toEqual(["open note/c", "suggest note/c", "update note/b", "create note/a"]);
+  expect(entries[1]!.score).toBe(0.71);
+  expect(readActivity(makeLayers(join(tmp, "nowhere")))).toEqual([]);
+});
 
-  // A link back to an ancestor further up is marked as a cycle, not expanded.
-  put("note/ghost.md", "---\nsummary: G\n---\nBack to [[note/a]].\n");
-  const deep = linkTree(load(), "note/a", new Set(["note/a", "note/a>out:note/c", "note/a>out:note/c>out:note/ghost"]));
-  const cycle = deep.find((n) => n.key === "note/a>out:note/c>out:note/ghost>out:note/a")!;
-  expect(cycle.cycle).toBe(true);
-  expect(cycle.expandable).toBe(false);
+test("activityRows: day headers, same-second batches collapse unless open", () => {
+  const now = new Date("2026-10-29T18:00:00");
+  const e = (iso: string, action: "create" | "update" | "delete", target: string, via: string) => ({ at: Date.parse(iso), action, target, via, layer: "global" });
+  const entries = [
+    e("2026-10-29T15:00:00", "update", "note/a", "edit"),
+    e("2026-10-29T14:00:00", "update", "note/b", "bash"),
+    e("2026-10-29T14:00:00", "update", "note/c", "bash"),
+    e("2026-10-29T14:00:00", "delete", "note/d", "bash"),
+    e("2026-10-28T09:00:00", "create", "note/a", "write"),
+    e("2026-10-20T09:00:00", "create", "note/b", "write"),
+  ];
+  const rows = activityRows(entries, new Set(), "", now);
+  const outline = rows.map((r) => (r.kind === "day" ? `# ${r.label} (${r.count})` : r.kind === "batch" ? `batch of ${r.entries.length}` : r.entry.target));
+  expect(outline).toEqual(["# Today (4)", "note/a", "batch of 3", "# Yesterday (1)", "note/a", "# Tue, Oct 20 (1)", "note/b"]);
+  const batch = rows.find((r) => r.kind === "batch")!;
+  const opened = activityRows(entries, new Set([batch.key]), "", now);
+  expect(opened.filter((r) => r.kind === "entry" && r.nested).map((r) => (r as { entry: { target: string } }).entry.target)).toEqual(["note/b", "note/c", "note/d"]);
+  // Keys stay unique, even for identical entries.
+  const twice = activityRows([entries[0]!, entries[0]!], new Set(), "", now);
+  expect(new Set(twice.map((r) => r.key)).size).toBe(twice.length);
+  // A query matches the target or the source.
+  expect(activityRows(entries, new Set(), "write", now).filter((r) => r.kind === "entry")).toHaveLength(2);
+});
+
+test("activity lines and pages", () => {
+  const store = load();
+  const now = new Date("2026-10-29T18:00:00");
+  const entries = [
+    { at: Date.parse("2026-10-29T15:04:00"), action: "update" as const, target: "note/a", via: "edit", layer: "global" },
+    { at: Date.parse("2026-10-29T15:03:00"), action: "delete" as const, target: "note/gone", via: "o6y rm", layer: "global" },
+    { at: Date.parse("2026-10-29T15:02:00"), action: "suggest" as const, target: "note/c", via: "s1", layer: "", score: 0.71 },
+  ];
+  const rows = activityRows(entries, new Set(), "", now);
+  const [, a, gone, suggested] = rows;
+  expect(plain(activityLine(store, a!, 40, false))).toMatch(/^15:04 ~ note\/a +edit$/);
+  expect(plain(activityLine(store, gone!, 40, false))).toMatch(/^15:03 − note\/gone +o6y rm$/);
+  expect(plain(activityLine(store, suggested!, 40, false))).toMatch(/^15:02 ◆ note\/c +0\.71$/);
+  for (const r of [a!, gone!, suggested!]) expect(plain(activityLine(store, r, 40, false))).toHaveLength(40);
+  expect(activityLine(store, gone!, 40, false)[2]!.color).toBe("red");
+
+  // An entry's page is the object's page under a line saying what happened; links still work.
+  const page = renderActivityPage(store, a!, 60);
+  expect(plain(page.lines[0]!)).toContain("~ updated");
+  expect(plain(page.lines[2]!)).toContain("note/a");
+  expect(page.links).toContain("note/b");
+  expect(plain(page.lines[page.linkLines[0]!]!)).toContain(page.links[0]!);
+  expect(plain(renderActivityPage(store, gone!, 60).lines[3]!)).toBe("No longer in the store.");
+
+  const batchEntries = ["note/a", "note/b", "note/gone"].map((target) => ({ ...entries[0]!, target, via: "bash" }));
+  const batch = activityRows(batchEntries, new Set(), "", now)[1]!;
+  expect(plain(activityLine(store, batch, 40, false))).toBe("15:04 ▸ 3 changes  ~3 · bash");
+  const batchPage = renderActivityPage(store, batch, 60);
+  expect(batchPage.links).toEqual(["note/a", "note/b"]);
+});
+
+test("search lines dim results under the threshold", () => {
+  const store = load();
+  const above = searchLine(store, { key: "note/a", id: "note/a", score: 0.62, similarity: 0.4 }, 30, false, 0.35);
+  const below = searchLine(store, { key: "note/b", id: "note/b", score: 0.2, similarity: 0.3 }, 30, false, 0.35);
+  expect(plain(above)).toBe("0.62 note/a");
+  expect(above[0]!.color).toBe("green");
+  expect(below[1]!.dim).toBe(true);
 });
 
 test("wrap and joinParagraphs", () => {

@@ -6,10 +6,12 @@ import {
   appendLog,
   blockingIssues,
   buildPromptSection,
+  cacheRoot,
   canonicalPath,
   changeWarnings,
   classifyPath,
   displayPath,
+  embedderFor,
   findLayer,
   formatIssues,
   lint,
@@ -19,18 +21,24 @@ import {
   parseId,
   pinnedCost,
   query,
+  readSuggestionLog,
   renderObjectFooter,
   renderRootIndex,
-  renderTypeIndex
-} from "./chunk-4rjx79a1.js";
+  renderTypeIndex,
+  search,
+  semanticUnavailable,
+  suggestionLogPath,
+  suggestionStats,
+  syncIndex
+} from "./chunk-pxet089h.js";
 
 // src/cli/o6y.ts
-import { readFileSync as readFileSync4 } from "node:fs";
+import { readFileSync as readFileSync3 } from "node:fs";
 
 // src/cli/main.ts
-import { existsSync as existsSync3, readdirSync as readdirSync2, readFileSync as readFileSync3 } from "node:fs";
-import { homedir as homedir2 } from "node:os";
-import { join as join3, relative, resolve } from "node:path";
+import { existsSync as existsSync2, readdirSync as readdirSync2, readFileSync as readFileSync2 } from "node:fs";
+import { homedir } from "node:os";
+import { join as join2, relative, resolve } from "node:path";
 import { parseArgs } from "node:util";
 
 // src/core/context.ts
@@ -255,265 +263,6 @@ class Plan {
   }
 }
 
-// src/core/semantic.ts
-import { createHash } from "node:crypto";
-import { appendFileSync, existsSync as existsSync2, mkdirSync as mkdirSync2, readFileSync as readFileSync2, renameSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { homedir } from "node:os";
-import { join as join2 } from "node:path";
-var INDEX_VERSION = 1;
-var EMBED_BATCH = 96;
-var EMBED_TEXT_MAX = 8000;
-var RERANK_TEXT_MAX = 4000;
-function apiKey(env) {
-  return env.CO_API_KEY || env.COHERE_API_KEY || undefined;
-}
-function semanticUnavailable(store, env) {
-  if (!store.semantic.enabled)
-    return "semantic search is off; set `semantic: { enabled: true }` in the root .schema.md (sends objects and queries to Cohere)";
-  if (!apiKey(env))
-    return "semantic search needs CO_API_KEY in the environment";
-  return;
-}
-function cohere(options) {
-  const base = (options.baseUrl ?? "https://api.cohere.com").replace(/\/$/, "");
-  const doFetch = options.fetch ?? fetch;
-  async function post(endpoint, body, signal) {
-    const res = await doFetch(`${base}/v2/${endpoint}`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${options.apiKey}`, "content-type": "application/json", "x-client-name": "o6y" },
-      body: JSON.stringify(body),
-      signal
-    });
-    const text = await res.text();
-    let json;
-    try {
-      json = JSON.parse(text);
-    } catch {}
-    if (!res.ok)
-      throw new Error(`Cohere ${endpoint} failed (${res.status}): ${json?.message ?? text.slice(0, 200)}`);
-    return json;
-  }
-  return {
-    async embed(texts, inputType, signal) {
-      const out = [];
-      for (let i = 0;i < texts.length; i += EMBED_BATCH) {
-        const json = await post("embed", { model: options.embedModel, texts: texts.slice(i, i + EMBED_BATCH), input_type: inputType, embedding_types: ["float"] }, signal);
-        const vectors = Array.isArray(json?.embeddings) ? json.embeddings : json?.embeddings?.float;
-        if (!Array.isArray(vectors))
-          throw new Error("Cohere embed returned no float embeddings");
-        for (const v of vectors)
-          out.push(normalize(Float32Array.from(v)));
-      }
-      return out;
-    },
-    async rerank(query2, documents, topN, signal) {
-      if (!documents.length)
-        return [];
-      const json = await post("rerank", { model: options.rerankModel, query: query2, documents, top_n: Math.min(topN, documents.length) }, signal);
-      const results = json?.results ?? [];
-      return results.map((r) => ({ index: r.index, score: r.relevance_score }));
-    }
-  };
-}
-function embedderFor(store, env, fetchImpl) {
-  if (semanticUnavailable(store, env))
-    return;
-  return cohere({
-    apiKey: apiKey(env),
-    embedModel: store.semantic.embedModel,
-    rerankModel: store.semantic.rerankModel,
-    baseUrl: env.CO_API_URL,
-    fetch: fetchImpl
-  });
-}
-function normalize(v) {
-  let norm = 0;
-  for (const x of v)
-    norm += x * x;
-  norm = Math.sqrt(norm);
-  if (norm > 0)
-    for (let i = 0;i < v.length; i++)
-      v[i] /= norm;
-  return v;
-}
-function dot(a, b, offset) {
-  let sum = 0;
-  for (let i = 0;i < a.length; i++)
-    sum += a[i] * b[offset + i];
-  return sum;
-}
-function fieldLines(obj) {
-  return Object.entries(obj.data).filter(([k]) => k !== "summary" && k !== "pinned").map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v instanceof Date ? v.toISOString().slice(0, 10) : String(v)}`);
-}
-function objectText(store, obj, max = EMBED_TEXT_MAX) {
-  const description = store.types.get(obj.type)?.schema.description;
-  const head = [`${obj.id}${description ? ` (${obj.type}: ${description})` : ""}`, obj.summary, ...fieldLines(obj)];
-  return `${head.join(`
-`)}
-
-${obj.body.trim()}`.slice(0, max);
-}
-var hash = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
-function cacheRoot(env) {
-  return env.O6Y_CACHE || join2(env.XDG_CACHE_HOME || join2(homedir(), ".cache"), "o6y");
-}
-function indexDir(cache, layer) {
-  return join2(cache, hash(layer.root));
-}
-function readIndex(dir) {
-  try {
-    const meta = JSON.parse(readFileSync2(join2(dir, "index.json"), "utf8"));
-    if (meta.version !== INDEX_VERSION)
-      return;
-    const buf = readFileSync2(join2(dir, "vectors.f32"));
-    const vectors = new Float32Array(buf.byteLength / 4);
-    new Uint8Array(vectors.buffer).set(buf);
-    if (vectors.length !== meta.ids.length * meta.dim)
-      return;
-    return { model: meta.model, dim: meta.dim, ids: meta.ids, hashes: meta.hashes, vectors };
-  } catch {
-    return;
-  }
-}
-function writeIndex(dir, index) {
-  mkdirSync2(dir, { recursive: true });
-  const tmp = (name) => join2(dir, `.${name}.${process.pid}.tmp`);
-  writeFileSync2(tmp("vectors.f32"), new Uint8Array(index.vectors.buffer, index.vectors.byteOffset, index.vectors.byteLength));
-  renameSync(tmp("vectors.f32"), join2(dir, "vectors.f32"));
-  const meta = { version: INDEX_VERSION, model: index.model, dim: index.dim, ids: index.ids, hashes: index.hashes };
-  writeFileSync2(tmp("index.json"), JSON.stringify(meta));
-  renameSync(tmp("index.json"), join2(dir, "index.json"));
-}
-var SKIP_CODES = {
-  frontmatter: "invalid frontmatter",
-  "unknown-type": "type has no schema",
-  "duplicate-id": "id also exists in another layer"
-};
-function skippedObjects(store) {
-  const out = [];
-  for (const issue of store.issues) {
-    const reason = SKIP_CODES[issue.code];
-    const info = reason ? classifyPath(store.layers, issue.path) : undefined;
-    if (info?.kind === "object")
-      out.push({ id: info.id, path: issue.path, layer: info.layer.root, reason });
-  }
-  return out;
-}
-async function syncIndex(store, embedder, cache, options = {}) {
-  const result = { embedded: 0, removed: 0, total: 0, skipped: skippedObjects(store) };
-  const model = store.semantic.embedModel;
-  for (const layer of store.layers) {
-    const dir = indexDir(cache, layer);
-    const old = options.full ? undefined : readIndex(dir);
-    const usable = old?.model === model ? old : undefined;
-    const previous = new Map;
-    usable?.ids.forEach((id, row) => previous.set(id, { hash: usable.hashes[row], row }));
-    const objects = [...store.objects.values()].filter((o) => o.layer.root === layer.root).sort((a, b) => a.id.localeCompare(b.id));
-    const shadowed = result.skipped.some((s) => s.layer === layer.root);
-    if (!objects.length && shadowed)
-      continue;
-    const texts = objects.map((o) => objectText(store, o));
-    const hashes = texts.map(hash);
-    const stale = objects.map((_, i) => i).filter((i) => previous.get(objects[i].id)?.hash !== hashes[i]);
-    const fresh = stale.length ? await embedder.embed(stale.map((i) => texts[i]), "search_document") : [];
-    const dim = fresh[0]?.length ?? usable?.dim ?? 0;
-    if (usable && fresh.length && usable.dim !== dim)
-      return syncIndex(store, embedder, cache, { full: true });
-    const vectors = new Float32Array(objects.length * dim);
-    const freshByIndex = new Map(stale.map((i, k) => [i, fresh[k]]));
-    objects.forEach((o, i) => {
-      const v = freshByIndex.get(i) ?? usable.vectors.subarray(previous.get(o.id).row * dim, (previous.get(o.id).row + 1) * dim);
-      vectors.set(v, i * dim);
-    });
-    const removed = usable ? usable.ids.filter((id) => !store.objects.has(id)).length : 0;
-    const dropped = usable ? usable.ids.some((id) => store.objects.get(id)?.layer.root !== layer.root) : false;
-    result.embedded += stale.length;
-    result.removed += removed;
-    result.total += objects.length;
-    const changed = stale.length > 0 || dropped || !old || old.model !== model;
-    if (changed && (objects.length || existsSync2(dir)))
-      writeIndex(dir, { model, dim, ids: objects.map((o) => o.id), hashes, vectors });
-  }
-  return result;
-}
-async function search(store, embedder, cache, query2, options = {}) {
-  const limit = options.limit ?? 10;
-  const model = store.semantic.embedModel;
-  const indexes = store.layers.map((l) => readIndex(indexDir(cache, l))).filter((i) => i?.model === model);
-  if (!indexes.some((i) => i.ids.length))
-    return [];
-  const [q] = await embedder.embed([query2], "search_query", options.signal);
-  const scored = [];
-  for (const index of indexes) {
-    if (index.dim !== q.length)
-      continue;
-    index.ids.forEach((id, row) => {
-      const obj = store.objects.get(id);
-      if (!obj || options.exclude?.has(id) || options.type && obj.type !== options.type)
-        return;
-      scored.push({ obj, similarity: dot(q, index.vectors, row * index.dim) });
-    });
-  }
-  scored.sort((a, b) => b.similarity - a.similarity);
-  const minScore = options.minScore ?? 0;
-  if (options.rerank === false) {
-    return scored.slice(0, limit).map((s) => ({ ...s, score: s.similarity })).filter((h) => h.score >= minScore);
-  }
-  const candidates = scored.filter((s) => s.similarity >= store.semantic.minSimilarity).slice(0, Math.max(store.semantic.candidates, limit));
-  const ranked = await embedder.rerank(query2, candidates.map((c) => objectText(store, c.obj, RERANK_TEXT_MAX)), limit, options.signal);
-  return ranked.map((r) => ({ ...candidates[r.index], score: r.score })).filter((h) => h.score >= minScore);
-}
-var suggestionLogPath = (cache) => join2(cache, "suggestions.jsonl");
-function readSuggestionLog(cache) {
-  let text;
-  try {
-    text = readFileSync2(suggestionLogPath(cache), "utf8");
-  } catch {
-    return [];
-  }
-  return text.split(`
-`).flatMap((line) => {
-    try {
-      return line ? [JSON.parse(line)] : [];
-    } catch {
-      return [];
-    }
-  });
-}
-function suggestionStats(records, since) {
-  const recent = since ? records.filter((r) => new Date(r.t) >= since) : records;
-  const used = new Set(recent.filter((r) => r.type === "use").map((r) => `${r.session}\x00${r.id}`));
-  const edges = [0, 0.5, 0.7, 1.01];
-  const bands = edges.slice(0, -1).map((from, i) => ({ from, to: Math.min(edges[i + 1], 1), suggestions: 0, used: 0 }));
-  const ignored = new Map;
-  const everUsed = new Set(recent.flatMap((r) => r.type === "use" ? [r.id] : []));
-  let suggestions = 0;
-  let usedCount = 0;
-  for (const r of recent) {
-    if (r.type !== "suggest")
-      continue;
-    for (const h of r.hits) {
-      const wasUsed = used.has(`${r.session}\x00${h.id}`);
-      suggestions++;
-      if (wasUsed)
-        usedCount++;
-      const band = bands.findLast((b) => h.score >= b.from);
-      band.suggestions++;
-      if (wasUsed)
-        band.used++;
-      if (!everUsed.has(h.id))
-        ignored.set(h.id, (ignored.get(h.id) ?? 0) + 1);
-    }
-  }
-  return {
-    sessions: new Set(recent.filter((r) => r.type === "suggest").map((r) => r.session)).size,
-    suggestions,
-    used: usedCount,
-    bands,
-    ignored: [...ignored].map(([id, times]) => ({ id, times })).sort((a, b) => b.times - a.times || a.id.localeCompare(b.id)).slice(0, 10)
-  };
-}
-
 // src/cli/main.ts
 class UsageError extends Error {
 }
@@ -548,7 +297,7 @@ function pickLayer(ctx, name, fallback) {
 }
 function objectPath(layer, id) {
   const { type, slug } = needId(id);
-  return join3(layer.root, type, `${slug}.md`);
+  return join2(layer.root, type, `${slug}.md`);
 }
 function parseAssignments(items) {
   return items.map((item) => {
@@ -583,7 +332,7 @@ function commit(ctx, plan, via, dryRun) {
 }
 function readInput(ctx, file) {
   if (file)
-    return readFileSync3(resolve(ctx.cwd, file), "utf8");
+    return readFileSync2(resolve(ctx.cwd, file), "utf8");
   const stdin = ctx.stdin();
   if (stdin === undefined)
     throw new UsageError("pass the content with --file <path> or on stdin");
@@ -768,7 +517,7 @@ var COMMANDS = {
         return 0;
       }
       const obj = needObject(store, id);
-      ctx.out(readFileSync3(obj.path, "utf8").trimEnd() + `
+      ctx.out(readFileSync2(obj.path, "utf8").trimEnd() + `
 ` + renderObjectFooter(store, obj.id, obj.path));
       return 0;
     }
@@ -859,7 +608,7 @@ var COMMANDS = {
         stores: ctx.layers.map((l) => ({
           name: l.name,
           root: l.root,
-          exists: existsSync3(l.root),
+          exists: existsSync2(l.root),
           objects: [...store.objects.values()].filter((obj) => obj.layer.name === l.name).length
         })),
         types: types.map((t) => ({ name: t.name, layer: t.layer.name, objects: store.objectsOfType(t.name).length })),
@@ -893,10 +642,10 @@ var COMMANDS = {
       const since = o.since ? parseSince(o.since) : 0;
       const entries = [];
       for (const layer of ctx.layers) {
-        const path = join3(layer.root, LOG_FILE);
-        if (!existsSync3(path))
+        const path = join2(layer.root, LOG_FILE);
+        if (!existsSync2(path))
           continue;
-        for (const line of readFileSync3(path, "utf8").split(`
+        for (const line of readFileSync2(path, "utf8").split(`
 `)) {
           const m = /^- (\S+) (.+)$/.exec(line);
           const at = m ? Date.parse(m[1]) : NaN;
@@ -969,7 +718,7 @@ var COMMANDS = {
       if (!target)
         throw new UsageError("missing target id or path");
       const store = ctx.load();
-      const path = target.includes("/") && (target.endsWith(".md") || target.startsWith(".") || target.startsWith("/") || target.startsWith("~")) ? canonicalPath(resolve(ctx.cwd, target.startsWith("~/") ? join3(homedir2(), target.slice(2)) : target)) : store.objects.get(target)?.path ?? objectPath(pickLayer(ctx, o.in), target);
+      const path = target.includes("/") && (target.endsWith(".md") || target.startsWith(".") || target.startsWith("/") || target.startsWith("~")) ? canonicalPath(resolve(ctx.cwd, target.startsWith("~/") ? join2(homedir(), target.slice(2)) : target)) : store.objects.get(target)?.path ?? objectPath(pickLayer(ctx, o.in), target);
       if (!classifyPath(ctx.layers, path))
         throw new UsageError(`${target} is not inside an o6y store`);
       const plan = new Plan(ctx.layers);
@@ -996,7 +745,7 @@ var COMMANDS = {
       if (!o.summary)
         throw new UsageError("--summary is required");
       const path = objectPath(pickLayer(ctx, o.in), id);
-      const body = o["body-file"] ? readFileSync3(resolve(ctx.cwd, o["body-file"]), "utf8") : o.body ?? "";
+      const body = o["body-file"] ? readFileSync2(resolve(ctx.cwd, o["body-file"]), "utf8") : o.body ?? "";
       const content = editFrontmatter("", (doc) => {
         doc.set("summary", o.summary);
         for (const [k, v] of parseAssignments(o.set ?? []))
@@ -1233,14 +982,14 @@ ${extra}
         }
       }
       for (const layer of ctx.layers) {
-        const dir = join3(layer.root, from);
-        if (!existsSync3(dir))
+        const dir = join2(layer.root, from);
+        if (!existsSync2(dir))
           continue;
         for (const file of readdirSync2(dir)) {
           if (!file.endsWith(".md"))
             continue;
-          const path = join3(dir, file);
-          plan.write(join3(layer.root, to, file), plan.read(path));
+          const path = join2(dir, file);
+          plan.write(join2(layer.root, to, file), plan.read(path));
           plan.delete(path);
         }
       }
@@ -1248,15 +997,15 @@ ${extra}
     }
   },
   view: {
-    usage: "o6y view [id] [--tree]",
+    usage: "o6y view [id] [--activity]",
     summary: "live terminal viewer (also: plain `o6y` in a terminal)",
-    options: { tree: { type: "boolean" } },
+    options: { activity: { type: "boolean" } },
     async run(ctx, [id], o) {
       if (!ctx.isTTY)
         throw new UsageError("the viewer needs an interactive terminal");
       process.env.NODE_ENV ??= "production";
-      const { runViewer } = await import("./chunk-5v4ajq3z.js");
-      await runViewer(ctx.layers, { current: id, view: o.tree ? "tree" : "browse", history: [], filter: "", open: [] });
+      const { runViewer } = await import("./chunk-fb07868e.js");
+      await runViewer(ctx.layers, { current: id, view: o.activity ? "activity" : "browse", history: [], filter: "", open: [] });
       return 0;
     }
   }
@@ -1284,7 +1033,7 @@ function help() {
 `);
 }
 function expandHome(p) {
-  return p === "~" || p.startsWith("~/") ? join3(homedir2(), p.slice(1)) : p;
+  return p === "~" || p.startsWith("~/") ? join2(homedir(), p.slice(1)) : p;
 }
 async function main(argv, io) {
   const args = [...argv];
@@ -1298,7 +1047,7 @@ async function main(argv, io) {
   };
   const globalFlag = take("--global");
   const projectFlag = take("--project");
-  const layers = makeLayers(resolve(io.cwd, expandHome(globalFlag || io.env.O6Y_HOME || join3(homedir2(), ".agents", "o6y"))), resolve(io.cwd, expandHome(projectFlag || io.env.O6Y_PROJECT || join3(io.cwd, ".agents", "o6y"))));
+  const layers = makeLayers(resolve(io.cwd, expandHome(globalFlag || io.env.O6Y_HOME || join2(homedir(), ".agents", "o6y"))), resolve(io.cwd, expandHome(projectFlag || io.env.O6Y_PROJECT || join2(io.cwd, ".agents", "o6y"))));
   const ctx = { ...io, layers, load: () => Store.load(layers) };
   let name = args.shift();
   if (!name)
@@ -1350,6 +1099,6 @@ process.exitCode = await main(process.argv.slice(2), {
 `),
   err: (text) => process.stderr.write(`${text}
 `),
-  stdin: () => process.stdin.isTTY ? undefined : readFileSync4(0, "utf8"),
+  stdin: () => process.stdin.isTTY ? undefined : readFileSync3(0, "utf8"),
   isTTY: !!process.stdin.isTTY && !!process.stdout.isTTY
 });

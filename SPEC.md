@@ -128,7 +128,7 @@ The combined size (summary + body) of all pinned objects is capped by `pinnedBud
 ## System prompt
 
 o6y injects an `<o6y>` section into every run. `/o6y` refreshes it on demand. The section holds:
-- short usage rules that point to the `o6y` skill
+- short usage rules that point to the `o6y` skill (with semantic search on, they also point to `o6y search` and explain `<o6y-relevant>` lists)
 - pinned objects, in full
 - the store paths
 - root guidance

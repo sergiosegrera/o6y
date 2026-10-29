@@ -776,15 +776,15 @@ const COMMANDS: Record<string, Command> = {
   },
 
   view: {
-    usage: "o6y view [id] [--tree]",
+    usage: "o6y view [id] [--activity]",
     summary: "live terminal viewer (also: plain `o6y` in a terminal)",
-    options: { tree: { type: "boolean" } },
+    options: { activity: { type: "boolean" } },
     async run(ctx, [id], o) {
       if (!ctx.isTTY) throw new UsageError("the viewer needs an interactive terminal");
       // React's development build is much slower; nothing here needs it.
       process.env.NODE_ENV ??= "production";
       const { runViewer } = await import("../viewer/run.tsx");
-      await runViewer(ctx.layers, { current: id, view: o.tree ? "tree" : "browse", history: [], filter: "", open: [] });
+      await runViewer(ctx.layers, { current: id, view: o.activity ? "activity" : "browse", history: [], filter: "", open: [] });
       return 0;
     },
   },

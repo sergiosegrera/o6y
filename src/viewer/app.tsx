@@ -1,24 +1,38 @@
 import { Box, Text, useApp, useInput, useWindowSize } from "ink";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { displayPath } from "../core/render.ts";
+import { cacheRoot, embedderFor, search as semanticSearch, semanticUnavailable, syncIndex } from "../core/semantic.ts";
 import { type Layer, Store } from "../core/store.ts";
 import {
+  activityLine,
+  activityRows,
+  activityTarget,
   type Line,
-  linkTree,
   parentKey,
+  readActivity,
+  renderActivityPage,
   renderPage,
   renderTypePage,
   renderWantedPage,
   rowKey,
-  treeLine,
+  type SearchRow,
+  searchLine,
   treeRows,
   truncate,
   typeKey,
   WANTED_KEY,
+  wrap as wrapText,
 } from "./model.ts";
 import { watchStores } from "./watch.ts";
 
-export type View = "browse" | "tree";
+export type View = "browse" | "activity" | "search";
+
+export interface SearchResults {
+  query: string;
+  status: "running" | "done" | "error";
+  message?: string;
+  hits: SearchRow[];
+}
 
 /** UI state that survives suspending the viewer to run $EDITOR. */
 export interface ViewerState {
@@ -28,7 +42,14 @@ export interface ViewerState {
   filter: string;
   /** Expanded headers in the browse list (`type:<name>`, `wanted:`); all start collapsed. */
   open?: string[];
+  /** Cursor in the activity or search list, expanded activity batches, and the last search. */
+  sideKey?: string;
+  batches?: string[];
+  results?: SearchResults;
 }
+
+/** Results listed by a `?` search, threshold or not; the threshold is drawn as a line. */
+const SEARCH_LIMIT = 20;
 
 interface Props {
   layers: Layer[];
@@ -69,11 +90,13 @@ export function App({ layers, initial, onEdit }: Props) {
   const [filter, setFilter] = useState(initial.filter);
   const [searching, setSearching] = useState(false);
   const [open, setOpen] = useState<Set<string>>(() => new Set(initial.open ?? []));
-  /** Tree view: expanded node keys and the cursor key; reset when the root changes. */
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [treeCursor, setTreeCursor] = useState<string | undefined>();
-  /** Tree state per root, so going back restores what was expanded. */
-  const treeMemory = useRef(new Map<string, { expanded: Set<string>; cursor?: string }>());
+  /** Activity and search views: the list cursor, expanded batches, the `?` prompt and its results. */
+  const [sideKey, setSideKey] = useState<string | undefined>(initial.sideKey);
+  const [batches, setBatches] = useState<Set<string>>(() => new Set(initial.batches ?? []));
+  const [asking, setAsking] = useState(false);
+  const [question, setQuestion] = useState(initial.results?.query ?? "");
+  const [results, setResults] = useState<SearchResults | undefined>(initial.results?.status === "done" ? initial.results : undefined);
+  const searchRun = useRef(0);
   const lastIndex = useRef(0);
 
   // ── hot reload ──
@@ -111,7 +134,7 @@ export function App({ layers, initial, onEdit }: Props) {
   const innerHeight = bodyHeight - 2;
   /** One pane at a time (list or page) below this width, e.g. in a side pane. */
   const narrow = columns < 80;
-  const leftWidth = narrow ? columns - 2 : clamp(Math.floor(columns * 0.3), 24, 44);
+  const leftWidth = narrow ? columns - 2 : view === "activity" ? clamp(Math.floor(columns * 0.4), 30, 56) : clamp(Math.floor(columns * 0.3), 24, 44);
   const rightWidth = narrow ? Math.max(10, columns - 4) : Math.max(10, columns - leftWidth - 6);
 
   // ── selection ──
@@ -121,8 +144,7 @@ export function App({ layers, initial, onEdit }: Props) {
   let cursor = current ? keys.indexOf(current) : -1;
   const exists = (key: string) =>
     key.startsWith("type:") ? store.types.has(key.slice(5)) : key === WANTED_KEY ? store.wanted.size > 0 : store.objects.has(key) || store.wanted.has(key);
-  // In tree view the root may be hidden in the list; elsewhere fall back to a nearby row.
-  const selected = current && exists(current) && (cursor >= 0 || view === "tree") ? current : undefined;
+  const selected = current && exists(current) && cursor >= 0 ? current : undefined;
   if (!selected) cursor = keys.length ? clamp(lastIndex.current, 0, keys.length - 1) : -1;
   const selectedKey = selected ?? (cursor >= 0 ? keys[cursor] : undefined);
   const row = cursor >= 0 ? tree[cursor] : undefined;
@@ -145,17 +167,31 @@ export function App({ layers, initial, onEdit }: Props) {
       return next;
     });
 
+  // ── activity and search lists ──
+  const activity = useMemo(() => readActivity(layers, cacheRoot(process.env)), [layers, loadedAt]);
+  const actRows = useMemo(() => activityRows(activity, batches), [activity, batches]);
+  const hits = results?.hits ?? [];
+  /** Selectable keys of the side list (day headers are not). */
+  const sideKeys = useMemo(
+    () => (view === "activity" ? actRows.filter((r) => r.kind !== "day").map((r) => r.key) : view === "search" ? hits.map((h) => h.key) : []),
+    [view, actRows, hits],
+  );
+  const sideIndex = sideKey && sideKeys.includes(sideKey) ? sideKeys.indexOf(sideKey) : sideKeys.length ? 0 : -1;
+  const sideSelected = sideIndex >= 0 ? sideKeys[sideIndex] : undefined;
+  const actRow = view === "activity" ? actRows.find((r) => r.key === sideSelected) : undefined;
+  const hit = view === "search" ? hits.find((h) => h.key === sideSelected) : undefined;
+  /** The object the page shows, for `e` (edit) and `o` (open in browse). */
+  const pageObject = view === "browse" ? id : view === "activity" ? (actRow ? activityTarget(store, actRow).object : undefined) : hit?.id;
+  const threshold = store.semantic.threshold;
+
   const page = useMemo(() => {
+    if (view === "activity") return actRow ? renderActivityPage(store, actRow, rightWidth, changedIds) : undefined;
+    if (view === "search") return hit && store.objects.has(hit.id) ? renderPage(store, hit.id, rightWidth, changedIds) : undefined;
     if (!selectedKey) return undefined;
     if (selectedKey.startsWith("type:")) return renderTypePage(store, selectedKey.slice(5), rightWidth);
     if (selectedKey === WANTED_KEY) return renderWantedPage(store, rightWidth);
     return renderPage(store, selectedKey, rightWidth, changedIds);
-  }, [store, selectedKey, rightWidth, changedIds]);
-  // The tree is rooted at the current object; the root starts expanded.
-  const openKeys = useMemo(() => (id && !expanded.size ? new Set([id]) : expanded), [id, expanded]);
-  const nodes = useMemo(() => (id && view === "tree" ? linkTree(store, id, openKeys) : []), [store, id, openKeys, view]);
-  const nodeIndex = Math.max(0, nodes.findIndex((n) => n.key === treeCursor));
-  const node = nodes[nodeIndex];
+  }, [store, view, actRow, hit, selectedKey, rightWidth, changedIds]);
 
   const go = (target: string, push = true) => {
     if (target === selectedKey) return;
@@ -163,12 +199,46 @@ export function App({ layers, initial, onEdit }: Props) {
     setCurrent(target);
     setLinkIdx(0);
     setScroll(0);
-    if (id) treeMemory.current.set(id, { expanded, cursor: treeCursor });
-    const saved = treeMemory.current.get(target);
-    setExpanded(saved?.expanded ?? new Set());
-    setTreeCursor(saved?.cursor);
     // Following a link to something hidden by the filter clears the filter.
     if (filter && !treeRows(store, filter).some((r) => rowKey(r) === target)) setFilter("");
+  };
+  /** Opens an object in browse, from any view. */
+  const follow = (target: string) => {
+    if (view !== "browse") {
+      setView("browse");
+      setFocus(narrow ? "page" : "list");
+    }
+    go(target);
+  };
+  const moveSide = (delta: number) => {
+    if (!sideKeys.length) return;
+    const next = sideKeys[clamp(sideIndex + delta, 0, sideKeys.length - 1)]!;
+    if (next !== sideSelected) {
+      setSideKey(next);
+      setLinkIdx(0);
+      setScroll(0);
+    }
+  };
+  const runSearch = async (q: string) => {
+    const run = ++searchRun.current;
+    setView("search");
+    setFocus("list");
+    setSideKey(undefined);
+    setScroll(0);
+    const why = semanticUnavailable(store, process.env);
+    if (why) return setResults({ query: q, status: "error", message: why, hits: [] });
+    setResults({ query: q, status: "running", hits: [] });
+    try {
+      const embedder = embedderFor(store, process.env)!;
+      const cache = cacheRoot(process.env);
+      await syncIndex(store, embedder, cache);
+      const found = await semanticSearch(store, embedder, cache, q, { limit: SEARCH_LIMIT, minScore: 0 });
+      if (run !== searchRun.current) return;
+      setResults({ query: q, status: "done", hits: found.map((h) => ({ key: h.obj.id, id: h.obj.id, score: h.score, similarity: h.similarity })) });
+    } catch (err) {
+      if (run !== searchRun.current) return;
+      setResults({ query: q, status: "error", message: err instanceof Error ? err.message : String(err), hits: [] });
+    }
   };
   const back = () => {
     const prev = history[history.length - 1];
@@ -199,13 +269,22 @@ export function App({ layers, initial, onEdit }: Props) {
     return first >= 0 ? first : undefined;
   })();
   const edit = () => {
-    const obj = id ? store.objects.get(id) : undefined;
+    const obj = pageObject ? store.objects.get(pageObject) : undefined;
     if (!obj) return;
-    onEdit(obj.path, { current: id, view, history, filter, open: [...open] });
+    onEdit(obj.path, { current, view, history, filter, open: [...open], sideKey: sideSelected, batches: [...batches], results });
     exit();
   };
 
   useInput((input, key) => {
+    if (asking) {
+      if (key.escape) setAsking(false);
+      else if (key.return) {
+        setAsking(false);
+        if (question.trim()) void runSearch(question.trim());
+      } else if (key.backspace || key.delete) setQuestion((q) => q.slice(0, -1));
+      else if (input && !key.ctrl && !key.meta) setQuestion((q) => q + input);
+      return;
+    }
     if (searching) {
       if (key.escape) {
         setSearching(false);
@@ -226,8 +305,14 @@ export function App({ layers, initial, onEdit }: Props) {
         setFilter(input.slice(1));
         return;
       }
-      if (/^[jk]+$/.test(input) && view === "browse" && focus === "list") {
-        return moveList([...input].reduce((n, ch) => n + (ch === "j" ? 1 : -1), 0));
+      if (input.startsWith("?")) {
+        setAsking(true);
+        setQuestion(input.slice(1));
+        return;
+      }
+      if (/^[jk]+$/.test(input) && focus === "list") {
+        const delta = [...input].reduce((n, ch) => n + (ch === "j" ? 1 : -1), 0);
+        return view === "browse" ? moveList(delta) : moveSide(delta);
       }
       input = input[input.length - 1]!;
     }
@@ -238,48 +323,47 @@ export function App({ layers, initial, onEdit }: Props) {
       setFocus("list");
       return;
     }
-    if (input === "t" || input === "g" || input === "2") {
-      if (view !== "tree" && !id) return; // the tree starts from an object
-      return setView(view === "tree" && input !== "2" ? "browse" : "tree");
+    if (input === "?") {
+      setAsking(true);
+      setQuestion("");
+      return;
     }
-    if (input === "1") return setView("browse");
+    const switchTo = (v: View) => {
+      if (v === view) return;
+      setView(v);
+      setFocus("list");
+      setScroll(0);
+      setLinkIdx(0);
+    };
+    if (input === "1") return switchTo("browse");
+    if (input === "2" || input === "a") return switchTo("activity");
+    if (input === "3" && results) return switchTo("search");
     if (input === "e") return edit();
     if (input === "r") return reload();
     if (input === "b" || key.backspace || key.delete) return back();
 
-    if (view === "tree") {
-      const toggle = (key: string, open: boolean) =>
-        setExpanded((prev) => {
-          const next = new Set(prev.size || !id ? prev : [id]);
-          if (open) next.add(key);
-          else next.delete(key);
+    if (input === "o" && pageObject && view !== "browse") return follow(pageObject);
+    if (key.tab) return setFocus(focus === "list" ? "page" : "list");
+
+    // Activity and search lists: move, expand batches, open the page.
+    if (view !== "browse" && focus === "list") {
+      if (key.downArrow || input === "j") moveSide(1);
+      else if (key.upArrow || input === "k") moveSide(-1);
+      else if (key.pageDown || input === " " || (key.ctrl && input === "d")) moveSide(innerHeight - 2);
+      else if (key.pageUp || (key.ctrl && input === "u")) moveSide(-(innerHeight - 2));
+      else if (actRow?.kind === "batch" && (key.return || key.rightArrow || input === "l" || ((key.leftArrow || input === "h") && actRow.open))) {
+        setBatches((prev) => {
+          const next = new Set(prev);
+          if (next.has(actRow.key)) next.delete(actRow.key);
+          else next.add(actRow.key);
           return next;
         });
-      if (!node) return key.escape ? setView("browse") : undefined;
-      if (key.downArrow || input === "j") setTreeCursor(nodes[Math.min(nodes.length - 1, nodeIndex + 1)]!.key);
-      else if (key.upArrow || input === "k") setTreeCursor(nodes[Math.max(0, nodeIndex - 1)]!.key);
-      else if (key.rightArrow || input === "l") {
-        if (node.expandable && !node.expanded) toggle(node.key, true);
-        else if (node.expanded) setTreeCursor(nodes[nodeIndex + 1]?.key);
-      } else if (key.leftArrow || input === "h") {
-        if (node.expanded) toggle(node.key, false);
-        else if (node.depth > 0) setTreeCursor(node.key.slice(0, node.key.lastIndexOf(">")));
-      } else if (input === " ") {
-        if (node.expandable) toggle(node.key, !node.expanded);
-      } else if (key.return) {
-        if (node.depth > 0) go(node.id);
-      } else if (input === "o" || key.tab) {
-        if (node.id !== id) go(node.id);
-        setView("browse");
-        if (narrow) setFocus("page");
-      } else if (input === "x") {
-        setExpanded(new Set());
-        setTreeCursor(undefined);
-      } else if (key.escape) setView("browse");
+      } else if (key.return || key.rightArrow || input === "l") setFocus("page");
+      else if (key.escape) switchTo("browse");
       return;
     }
 
-    if (key.tab) return setFocus(focus === "list" ? "page" : "list");
+
 
     // List headers: expand/collapse types (all start collapsed), jump between them.
     if (focus === "list" && !filter) {
@@ -335,7 +419,7 @@ export function App({ layers, initial, onEdit }: Props) {
       const i = (from + (input === "n" ? 1 : -1) + n) % n;
       setLinkIdx(i);
       ensureVisible(page!.linkLines[i]!);
-    } else if (key.return && activeLink !== undefined) go(page!.links[activeLink]!);
+    } else if (key.return && activeLink !== undefined) follow(page!.links[activeLink]!);
   });
 
   // ── header ──
@@ -350,7 +434,8 @@ export function App({ layers, initial, onEdit }: Props) {
           <Text inverse bold color="cyan"> o6y </Text>
           <Text> </Text>
           <Text inverse={view === "browse"} bold={view === "browse"}>{narrow ? " 1 " : " 1 browse "}</Text>
-          <Text inverse={view === "tree"} bold={view === "tree"}>{narrow ? " 2 " : " 2 tree "}</Text>
+          <Text inverse={view === "activity"} bold={view === "activity"}>{narrow ? " 2 " : " 2 activity "}</Text>
+          {results ? <Text inverse={view === "search"} bold={view === "search"}>{narrow ? " 3 " : " 3 search "}</Text> : null}
           {narrow ? null : <Text dimColor>  {stores}</Text>}
         </Text>
       </Box>
@@ -382,17 +467,28 @@ export function App({ layers, initial, onEdit }: Props) {
   const footerText = searching
     ? null
     : narrow
-      ? view === "tree"
-        ? "↑↓ · →← open/close · ⏎ root · o page · b"
-        : focus === "list"
-          ? "↑↓ · ⏎→ open · ← close · x/X all · [ ] · t · /"
+      ? view === "browse"
+        ? focus === "list"
+          ? "↑↓ · ⏎→ open · ← close · x/X all · [ ] · 2 activity · / ?"
           : "↑↓␣ scroll · n/N link · ⏎ go · ← list · e"
-      : view === "tree"
-        ? "↑↓ move  →/l expand  ←/h collapse  space toggle  enter make root  o open page  x collapse all  b back  q quit"
         : focus === "list"
-          ? "↑↓ move  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next type  tab page  t tree  b back  / search  e edit  q"
-          : "↑↓/j/k/space scroll  n/N next/prev link  enter follow  ←/esc list  t tree  b back  e edit  q quit";
-  const footer = searching ? (
+          ? "↑↓ · ⏎→ page · o open · 1 browse · ?"
+          : "↑↓␣ scroll · n/N link · ⏎ go · ← list · o · e"
+      : view === "browse"
+        ? focus === "list"
+          ? "↑↓ move  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next type  tab page  2 activity  / filter  ? search  b back  e edit  q"
+          : "↑↓/j/k/space scroll  n/N next/prev link  enter follow  ←/esc list  2 activity  ? search  b back  e edit  q quit"
+        : focus === "list"
+          ? `↑↓ move  ⏎/→ ${view === "activity" ? "expand batch / page" : "page"}  o open in browse  tab page  1 browse  ${view === "activity" ? "" : "2 activity  "}? search  e edit  q`
+          : "↑↓/j/k/space scroll  n/N next/prev link  enter follow  ←/esc list  o open in browse  e edit  q quit";
+  const footer = asking ? (
+    <Text wrap="truncate">
+      <Text color="cyan">? </Text>
+      <Text>{question}</Text>
+      <Text inverse> </Text>
+      <Text dimColor>{narrow ? "" : "  search by meaning · enter run · esc cancel"}</Text>
+    </Text>
+  ) : searching ? (
     <Text wrap="truncate">
       <Text color="yellow">/</Text>
       <Text>{filter}</Text>
@@ -401,38 +497,65 @@ export function App({ layers, initial, onEdit }: Props) {
     </Text>
   ) : (
     <Text dimColor wrap="truncate">
-      {filter ? <Text color="yellow">{narrow ? `/${filter} ` : `filter: ${filter} (esc clears)  `}</Text> : null}
+      {filter && view === "browse" ? <Text color="yellow">{narrow ? `/${filter} ` : `filter: ${filter} (esc clears)  `}</Text> : null}
       {footerText}
     </Text>
   );
 
-  if (view === "tree") {
-    const detailLines = rows >= 22 ? 3 : rows >= 14 ? 2 : 0;
-    const treeHeight = Math.max(1, innerHeight - (detailLines ? detailLines + 1 : 0));
-    const start = clamp(nodeIndex - Math.floor(treeHeight / 2), 0, Math.max(0, nodes.length - treeHeight));
-    const detail = node ? store.objects.get(node.id) : undefined;
-    const parentId = node && node.depth > 0 ? nodes.find((n) => n.key === node.key.slice(0, node.key.lastIndexOf(">")))?.id : undefined;
+  const visibleLines = page?.lines.slice(scroll, scroll + innerHeight) ?? [];
+  const activeLinkLine = focus === "page" && activeLink !== undefined ? page!.linkLines[activeLink] : undefined;
+  const pagePane = narrow && focus === "list" ? null : (
+    <Box flexDirection="column" flexGrow={1} borderStyle="round" borderColor={focus === "page" ? "cyan" : "gray"} paddingX={1}>
+      {visibleLines.map((line, i) => {
+        const n = scroll + i;
+        return n === activeLinkLine ? <LineView key={n} line={line.map((s) => ({ ...s, inverse: true }))} /> : <LineView key={n} line={line} />;
+      })}
+    </Box>
+  );
+
+  // ── activity and search ──
+  if (view !== "browse") {
+    const w = leftWidth;
+    const selectedOnList = focus === "list";
+    let lines: { key: string; line: Line }[];
+    let selectedLine = 0;
+    if (view === "activity") {
+      lines = actRows.map((r) => ({ key: r.key, line: activityLine(store, r, w, selectedOnList && r.key === sideSelected, changedIds) }));
+      selectedLine = Math.max(0, actRows.findIndex((r) => r.key === sideSelected));
+      if (!actRows.length) lines = [{ key: "empty", line: [{ text: " no activity logged yet", dim: true }] }];
+    } else {
+      const head: Line = [{ text: truncate(`? ${results?.query ?? ""}`, w), color: "cyan", bold: true }];
+      lines = [{ key: "query", line: head }];
+      if (results?.status === "running") lines.push({ key: "status", line: [{ text: " searching…", dim: true }] });
+      else if (results?.status === "error") {
+        lines.push(...wrapText(results.message ?? "search failed", w).map((t, i) => ({ key: `err${i}`, line: [{ text: t, color: "red" }] as Line })));
+      } else if (!hits.length) lines.push({ key: "status", line: [{ text: " no results", dim: true }] });
+      let drewThreshold = false;
+      hits.forEach((h, i) => {
+        if (!drewThreshold && h.score < threshold) {
+          drewThreshold = true;
+          const label = ` threshold ${threshold.toFixed(2)} `;
+          const side = Math.max(0, w - label.length);
+          lines.push({ key: "threshold", line: [{ text: `${"─".repeat(Math.floor(side / 2))}${label}${"─".repeat(Math.ceil(side / 2))}`, color: "yellow", dim: true }] });
+        }
+        if (h.key === sideSelected) selectedLine = lines.length;
+        lines.push({ key: h.key, line: searchLine(store, h, w, selectedOnList && h.key === sideSelected, threshold) });
+        if (i === hits.length - 1 && !drewThreshold && hits.length) lines.push({ key: "all-above", line: [{ text: ` all above threshold ${threshold.toFixed(2)}`, dim: true }] });
+      });
+    }
+    const start = clamp(selectedLine - Math.floor(innerHeight / 2), 0, Math.max(0, lines.length - innerHeight));
     return (
       <Box flexDirection="column" width={columns} height={rows}>
         {header}
-        <Box flexDirection="column" borderStyle="round" borderColor="cyan" height={bodyHeight} paddingX={1}>
-          <Box flexDirection="column" height={treeHeight}>
-            {nodes.slice(start, start + treeHeight).map((n, i) => (
-              <LineView key={n.key} line={treeLine(store, n, columns - 4, start + i === nodeIndex, changedIds)} />
-            ))}
-            {!nodes.length ? <Text dimColor>Empty store.</Text> : null}
-          </Box>
-          {detailLines && node ? (
-            <>
-              <Text dimColor>{"─".repeat(Math.max(0, columns - 4))}</Text>
-              <Text wrap="truncate">
-                <Text bold color={detail ? "cyan" : "red"}>{node.id}</Text>
-                {parentId ? <Text dimColor> {{ out: "← linked from", in: "→ links to", both: "↔ linked with", root: "" }[node.dir]} {parentId} via {node.via.join(", ")}</Text> : null}
-              </Text>
-              <Text wrap="truncate" italic>{detail ? detail.summary : "wanted page: linked but not written yet"}</Text>
-              {detailLines > 2 ? <Text dimColor wrap="truncate">{detail ? detail.body.replace(/\s+/g, " ").trim() : ""}</Text> : null}
-            </>
-          ) : null}
+        <Box height={bodyHeight}>
+          {narrow && focus === "page" ? null : (
+            <Box flexDirection="column" width={leftWidth + 2} flexShrink={0} borderStyle="round" borderColor={focus === "list" ? "cyan" : "gray"} paddingX={0}>
+              {lines.slice(start, start + innerHeight).map((l) => (
+                <LineView key={l.key} line={l.line} />
+              ))}
+            </Box>
+          )}
+          {pagePane}
         </Box>
         {footer}
       </Box>
@@ -443,9 +566,6 @@ export function App({ layers, initial, onEdit }: Props) {
   const listStart = clamp(cursor - Math.floor(innerHeight / 2), 0, Math.max(0, tree.length - innerHeight));
   const visibleRows = tree.slice(listStart, listStart + innerHeight);
   const multiLayer = layers.length > 1;
-  const visibleLines = page?.lines.slice(scroll, scroll + innerHeight) ?? [];
-  const activeLinkLine = focus === "page" && activeLink !== undefined ? page!.linkLines[activeLink] : undefined;
-
   return (
     <Box flexDirection="column" width={columns} height={rows}>
       {header}
@@ -500,12 +620,7 @@ export function App({ layers, initial, onEdit }: Props) {
             );
           })}
         </Box>}
-        {narrow && focus === "list" ? null : <Box flexDirection="column" flexGrow={1} borderStyle="round" borderColor={focus === "page" ? "cyan" : "gray"} paddingX={1}>
-          {visibleLines.map((line, i) => {
-            const n = scroll + i;
-            return n === activeLinkLine ? <LineView key={n} line={line.map((s) => ({ ...s, inverse: true }))} /> : <LineView key={n} line={line} />;
-          })}
-        </Box>}
+        {pagePane}
       </Box>
       {footer}
     </Box>

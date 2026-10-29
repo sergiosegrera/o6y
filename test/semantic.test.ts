@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { main } from "../src/cli/main.ts";
+import { buildPromptSection } from "../src/core/render.ts";
 import { parseRootSchema } from "../src/core/schema.ts";
 import {
   cohere,
@@ -70,6 +71,17 @@ describe("settings", () => {
     expect(semanticUnavailable(load(), env())).toContain("semantic: { enabled: true }");
     expect(embedderFor(load(), env())).toBeUndefined();
   });
+});
+
+test("the prompt rules point to `o6y search` and suggestions only when semantic search is on", () => {
+  const on = buildPromptSection(load()).text;
+  expect(on).toContain('`o6y search "<question>"` finds objects by meaning');
+  expect(on).toContain("<o6y-relevant>");
+  put(".schema.md", "---\n---\n");
+  const off = buildPromptSection(load()).text;
+  expect(off).toContain("`o6y query <text>` (or --type/--where/--links-to), `o6y lint`");
+  expect(off).not.toContain("o6y search");
+  expect(off).not.toContain("<o6y-relevant>");
 });
 
 describe("index", () => {
