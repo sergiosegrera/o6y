@@ -159,6 +159,20 @@ const RULES = `o6y is your persistent, typed memory: a wiki of markdown files yo
 - The \`o6y\` shell command searches and maintains memory: {SEARCH}\`o6y lint\`, and validated multi-file changes such as \`o6y mv\` (rename + relink), \`o6y merge\`, \`o6y field rename\`. Prefer it over hand-written sed/perl. \`o6y help\` lists everything.
 - Consult memory before work that touches what it covers (people, preferences, decisions, notes). Summaries are only pointers: read every object relevant to the task (including the people involved) before advising or acting.{RELEVANT} Record durable knowledge you learn — the tribal knowledge a teammate would need — not task chatter. Update existing objects rather than duplicating them. Project-specific → project store; shared → global store.`;
 
+/** The same rules for agents that reach o6y through its MCP server instead of the pi extension. */
+const MCP_RULES = `o6y is your persistent, typed memory: a wiki of markdown objects you read and change through the o6y MCP tools. Change it only through them, never by editing store files with other tools: they validate and log every change. \`o6y_show manual\` is the full manual (schema syntax, links, layers, migrations); read it before creating or changing schemas or doing anything non-trivial. It is written for the pi integration: where it says to use read/write/edit on a store file, use o6y_show/o6y_write/o6y_edit on that path or id, and run \`o6y\` commands with o6y_cli.
+- Objects are <type>/<kebab-slug> (the file <store>/<type>/<slug>.md) with YAML frontmatter. \`summary\` (one line, max {MAX} chars; keep it well under) is required; other fields come from the type's schema (\`o6y_show <type>/.schema\`), whose body also says how to write that type. Before your first write to a type in a session, read its schema.
+- Set \`pinned: true\` on an object to load its full content in every session. Reserve it for critical, always-relevant knowledge; the total is capped by \`pinnedBudget\`.
+- Link objects with [[type/slug]]. Links to things that don't exist yet are allowed (reported as warnings / wanted pages).
+- o6y_show takes an id, a schema (\`<type>/.schema\`, \`.schema\`), \`index\` (the full catalog), \`<type>/index\` (one type), or any path under a store listed below. Showing an object lists its backlinks.
+- o6y_write and o6y_edit validate the change before saving it; when one is rejected, nothing was changed: fix it and retry. Find objects with {SEARCH}and use o6y_cli for \`o6y lint\` and validated multi-file changes such as \`o6y mv\` (rename + relink), \`o6y merge\`, \`o6y field rename\`, \`o6y rm\` (\`help\` lists everything).
+- Consult memory before work that touches what it covers (people, preferences, decisions, notes). Summaries are only pointers: read every object relevant to the task (including the people involved) before advising or acting. Record durable knowledge you learn — the tribal knowledge a teammate would need — not task chatter. Update existing objects rather than duplicating them. Project-specific → project store; shared → global store.
+- The memory below is as of the start of this session; the tools always see the current store.`;
+
+const MCP_PLAIN_SEARCH = "o6y_query (text, or type/where/links_to filters) ";
+const MCP_SEMANTIC_SEARCH =
+  'o6y_search (by meaning; use it before work memory may cover; "No matching objects." means it has nothing) or o6y_query (exact type/where/links_to filters), ';
+
 const PLAIN_SEARCH = "`o6y query <text>` (or --type/--where/--links-to), ";
 /** With semantic search on: searching by meaning finds what word matching misses, and suggestions may arrive. */
 const SEMANTIC_SEARCH =
@@ -236,6 +250,8 @@ export function relevantObjects(store: Store, workPaths: string[], home = homedi
 export interface PromptOptions {
   /** Absolute directories the agent is working in (cwd, repository root), for relevance ranking. */
   workPaths?: string[];
+  /** Rules for an agent using the MCP server's tools instead of pi's file tools and bash. */
+  mcp?: boolean;
 }
 
 /**
@@ -271,9 +287,14 @@ export function renderPromptSection(store: Store, options: PromptOptions = {}): 
 
 /** The prompt section plus a breakdown of where its characters and budget went. */
 export function buildPromptSection(store: Store, options: PromptOptions = {}): { text: string; stats: PromptStats } {
-  const rules = RULES.replace("{MAX}", String(store.settings.summaryMaxLength))
-    .replace("{SEARCH}", store.semantic.enabled ? SEMANTIC_SEARCH : PLAIN_SEARCH)
-    .replace("{RELEVANT}", store.semantic.enabled ? RELEVANT_NOTE : "");
+  const rules = options.mcp
+    ? MCP_RULES.replace("{MAX}", String(store.settings.summaryMaxLength)).replace(
+        "{SEARCH}",
+        store.semantic.enabled ? MCP_SEMANTIC_SEARCH : MCP_PLAIN_SEARCH,
+      )
+    : RULES.replace("{MAX}", String(store.settings.summaryMaxLength))
+        .replace("{SEARCH}", store.semantic.enabled ? SEMANTIC_SEARCH : PLAIN_SEARCH)
+        .replace("{RELEVANT}", store.semantic.enabled ? RELEVANT_NOTE : "");
   const head: string[] = [rules, "", "Stores:", ...store.layers.map((l) => `- ${l.name}: ${displayPath(l.root)}`)];
   const guidanceStart = head.join("\n").length;
   for (const layer of store.layers) {

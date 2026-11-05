@@ -775,6 +775,22 @@ const COMMANDS: Record<string, Command> = {
     },
   },
 
+  mcp: {
+    usage: "o6y mcp",
+    summary: "serve the stores as a local MCP server over stdio, for agents other than pi",
+    async run(ctx) {
+      const [{ serve }, { StdioServerTransport }] = await Promise.all([
+        import("../mcp/server.ts"),
+        import("@modelcontextprotocol/sdk/server/stdio.js"),
+      ]);
+      const transport = new StdioServerTransport();
+      // The client closing our stdin is the end of the session; the transport doesn't notice it itself.
+      process.stdin.once("end", () => void transport.close());
+      await serve({ cwd: ctx.cwd, env: ctx.env, layers: ctx.layers, runCli: main, fetch: ctx.fetch }, transport);
+      return 0;
+    },
+  },
+
   view: {
     usage: "o6y view [id] [--activity]",
     summary: "live terminal viewer (also: plain `o6y` in a terminal)",
@@ -795,6 +811,7 @@ const GROUPS: [string, string[]][] = [
   ["Write (validated as one change; --dry-run previews)", ["new", "set", "mv", "merge", "rm", "field", "type", "check"]],
   ["Semantic search (opt-in: semantic.enabled in the root schema, CO_API_KEY)", ["search", "reindex", "suggestions"]],
   ["Viewer", ["view"]],
+  ["Agents other than pi", ["mcp"]],
 ];
 
 function help(): string {
