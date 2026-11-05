@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.9.0
+
+- **MCP server for agents other than pi:** `o6y mcp` serves the stores over stdio (`claude mcp add o6y -- npx -y github:sergiosegrera/o6y mcp`). Tools: `o6y_show`, `o6y_write`, `o6y_edit` (validated before saving, logged as `mcp`), `o6y_query`, `o6y_search`, and `o6y_cli` for any other command. The memory index pi puts in its system prompt is sent as the server's instructions, with rules that point at the tools instead of file tools and bash. The server seeds an empty global store and migrates store formats on start, as a pi session does.
+
 ## 0.8.1
 
 - **Viewer:** the activity timeline shows only store changes; suggestions and opens are no longer listed (`o6y suggestions` still summarizes them).

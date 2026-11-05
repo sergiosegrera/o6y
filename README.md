@@ -82,6 +82,36 @@ semantic:
 
 See SPEC.md for the models and the rest of the settings.
 
+## Other agents (MCP)
+
+`o6y mcp` serves the same stores as a local MCP server over stdio, for agents other than pi (Claude Code, Codex, Cursor…). Add it to your agent:
+
+```bash
+claude mcp add o6y -- npx -y github:sergiosegrera/o6y#v0.9.0 mcp     # Claude Code
+```
+
+```toml
+# Codex: ~/.codex/config.toml
+[mcp_servers.o6y]
+command = "npx"
+args = ["-y", "github:sergiosegrera/o6y#v0.9.0", "mcp"]
+```
+
+Stores are found as for the CLI: `O6Y_HOME` / `O6Y_PROJECT`, `o6y --global DIR --project DIR mcp`, or `~/.agents/o6y` and `<cwd>/.agents/o6y`, where the cwd is the directory the agent starts the server in (usually the project).
+
+MCP clients' own tools can't be hooked, so the server provides tools in their place:
+- `o6y_show`: read an object (with backlinks), a schema (`person/.schema`, `.schema`), the catalog (`index`, `person/index`), the manual (`manual`), or any path in a store
+- `o6y_write`, `o6y_edit`: create or change an object or schema, validated before anything is saved
+- `o6y_query`, `o6y_search`: find objects by filters, or by meaning
+- `o6y_cli`: any other `o6y` command (`mv`, `merge`, `field rename`, `lint`, `rm`…)
+
+The memory index that pi gets in its system prompt (rules, guidance, pinned objects, catalog) is sent as the server's instructions, which clients put in the system prompt. Clients may shorten long instructions; the tools always have the rest.
+
+Differences from pi:
+- **Writes are only validated through the o6y tools.** The instructions tell the agent to use them, but nothing stops it from editing store files with its own file tools. `o6y lint` finds anything that broke.
+- **No relevant-object suggestions** on each message; the agent searches with `o6y_search`.
+- **The instructions are computed when the server starts.** Restart it (or the agent) to refresh them; the tools always see the current store.
+
 ## Viewer
 
 `o6y` (or `o6y view`) in a terminal opens a live viewer of your stores, built with Ink. To use the command outside pi, install it with Bun or npm:
@@ -118,7 +148,7 @@ bun run o6y help    # the CLI from source (src/cli); bun run view for the viewer
 bun run build       # rebuild dist/ (the bundled CLI) after changing src/; CI checks it's current
 ```
 
-`src/core` is pure TypeScript using `node:fs`, because pi runs extensions on Node. `src/cli` is the `o6y` command, and `dist/` holds its Node bundle, which is committed so git installs work without a build step. `src/extension.ts` is the pi adapter (hooks only), and `skills/o6y/SKILL.md` is the manual.
+`src/core` is pure TypeScript using `node:fs`, because pi runs extensions on Node. `src/cli` is the `o6y` command, and `dist/` holds its Node bundle, which is committed so git installs work without a build step. `src/extension.ts` is the pi adapter (hooks only), `src/mcp` is the MCP server for other agents, and `skills/o6y/SKILL.md` is the manual.
 
 ## License
 

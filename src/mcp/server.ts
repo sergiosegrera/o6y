@@ -1,0 +1,340 @@
+/**
+ * `o6y mcp`: o6y as a local MCP server (stdio), for agents other than pi. Pi's extension hooks the
+ * agent's own file tools; an MCP client's tools can't be hooked, so here every read and write goes
+ * through o6y's tools instead, validated the same way, and the memory index the extension puts in
+ * the system prompt is sent as the server's instructions.
+ */
+import { existsSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { z } from "zod";
+import type { Io } from "../cli/main.ts";
+import { workPaths } from "../core/context.ts";
+import { Plan } from "../core/edit.ts";
+import { ensureFormat } from "../core/format.ts";
+import { appendLog, bootstrap } from "../core/fsops.ts";
+import { parseId } from "../core/links.ts";
+import { displayPath, renderObjectFooter, renderPromptSection, renderRootIndex, renderTypeIndex } from "../core/render.ts";
+import { canonicalPath, classifyPath, formatIssues, INDEX_FILE, type Layer, LOG_FILE, type PathInfo, SCHEMA_FILE, Store } from "../core/store.ts";
+
+/** Runs the CLI in-process with captured output; the server passes its own `main` to avoid an import cycle. */
+export type RunCli = (argv: string[], io: Io) => Promise<number>;
+
+export interface ServerOptions {
+  cwd: string;
+  env: Record<string, string | undefined>;
+  layers: Layer[];
+  runCli: RunCli;
+  fetch?: typeof fetch;
+}
+
+/** The package root: two levels up from src/mcp/, one from the bundled dist/. */
+const PACKAGE_ROOT = (() => {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 3; i++, dir = dirname(dir)) if (existsSync(join(dir, "package.json"))) return dir;
+  return dirname(dirname(fileURLToPath(import.meta.url)));
+})();
+const SKILL_PATH = join(PACKAGE_ROOT, "skills", "o6y", "SKILL.md");
+const VIA = "mcp";
+/** CLI commands o6y_cli won't run: they take over the terminal or start another server. */
+const NOT_VIA_CLI = new Set(["view", "mcp"]);
+
+type ToolResult = { content: { type: "text"; text: string }[]; isError?: boolean };
+const ok = (text: string): ToolResult => ({ content: [{ type: "text", text }] });
+const fail = (text: string): ToolResult => ({ content: [{ type: "text", text }], isError: true });
+
+function expandHome(p: string): string {
+  return p === "~" || p.startsWith("~/") ? join(homedir(), p.slice(1)) : p;
+}
+
+/** Seeds an empty global store and brings each store to the current format, as a pi session start does. */
+export function prepareStores(layers: Layer[]): string[] {
+  const notes: string[] = [];
+  const seeded = bootstrap(layers[0]!.root);
+  if (seeded.length) appendLog(layers, seeded.map((path) => ({ action: "create" as const, path })), "bootstrap");
+  for (const layer of layers) {
+    const result = ensureFormat(layer);
+    if (result.status === "newer") notes.push(`the ${layer.name} store uses format ${result.version}, newer than this o6y supports; update o6y`);
+    else if (result.status === "migrated") {
+      appendLog(layers, [{ action: "update", path: join(layer.root, SCHEMA_FILE) }], `migrate format ${result.from}→${result.to}`);
+    }
+  }
+  return notes;
+}
+
+type Target = { kind: "manual" } | { kind: "path"; path: string; info: PathInfo };
+
+/**
+ * What a tool's `target` names: `manual`, an object id (`note/ledger`), a schema (`note/.schema`,
+ * `.schema`), an index (`index`, `note/index`), or a path inside a store. Ids resolve to the layer
+ * that has them, else to `in` (default global).
+ */
+function resolveTarget(store: Store, layers: Layer[], cwd: string, target: string, layerName?: string): Target | string {
+  const t = target.trim();
+  if (t === "manual") return { kind: "manual" };
+  const layer = layerName ? layers.find((l) => l.name === layerName) : layers[0];
+  if (!layer) return `\`in\` must be one of: ${layers.map((l) => l.name).join(", ")}`;
+  let path: string;
+  if (t.startsWith("/") || t.startsWith("~") || t.startsWith(".")) {
+    if (t === SCHEMA_FILE.replace(/\.md$/, "")) path = join(layer.root, SCHEMA_FILE);
+    else path = resolve(cwd, expandHome(t));
+  } else if (t === "index") path = join(layer.root, INDEX_FILE);
+  else {
+    const [type, rest] = t.split("/", 2);
+    if (!type || rest === undefined) return `\`${t}\` is not a target; use type/slug, type/.schema, .schema, index, type/index, manual or a store path`;
+    if (rest === ".schema" || rest === "index") {
+      const existing = store.types.get(type);
+      const root = layerName || !existing ? layer.root : existing.layer.root;
+      path = join(root, type, rest === "index" ? INDEX_FILE : SCHEMA_FILE);
+    } else {
+      if (!parseId(t)) return `\`${t}\` is not a valid id; use type/slug in kebab-case, e.g. note/release-train`;
+      const existing = store.objects.get(t);
+      path = existing && !layerName ? existing.path : join(layer.root, type, `${rest}.md`);
+    }
+  }
+  path = canonicalPath(path);
+  const info = classifyPath(layers, path);
+  if (!info) return `${displayPath(path)} is not inside an o6y store (${layers.map((l) => `${l.name}: ${displayPath(l.root)}`).join(", ")})`;
+  if (info.kind === "invalid") return `${displayPath(path)}: ${info.reason}`;
+  return { kind: "path", path, info };
+}
+
+function readOrNull(path: string): string | null {
+  try {
+    return readFileSync(path, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+/** Validates a one-file plan and applies it, reporting like the CLI's write commands. */
+function commitFile(layers: Layer[], path: string, content: string, tool: string): ToolResult {
+  const plan = new Plan(layers);
+  plan.write(path, content);
+  const result = plan.validate(Store.load(layers));
+  if (result.blocking.length) {
+    const isSchema = /\/\.schema\.md$/.test(path);
+    const hint = isSchema && result.blocking.some((i) => i.path !== path)
+      ? "\nSchema changes must not invalidate existing objects: migrate the objects first (extra fields are allowed), or make the schema change and the migration in one step with o6y_cli (e.g. `field rename`)."
+      : "";
+    return fail(`[o6y] ${tool} rejected; nothing was changed.\n${formatIssues(result.blocking, layers)}${hint}`);
+  }
+  if (!result.changes.length) return ok("[o6y] nothing to change: the content is already that.");
+  plan.apply(`${tool} (${VIA})`);
+  const lines = result.changes.map((c) => `${c.action} ${displayPath(c.path)}`);
+  if (result.warnings.length) {
+    lines.push(`[o6y] saved with warnings (not blocking; fix when you can, e.g. by writing the missing objects):\n${formatIssues(result.warnings, layers)}`);
+  }
+  return ok(lines.join("\n"));
+}
+
+function managedReason(info: PathInfo): string | undefined {
+  if (info.kind === "root-index" || info.kind === "type-index") return `${INDEX_FILE} is generated; it cannot be written. Write objects or schemas instead.`;
+  if (info.kind === "log") return `${LOG_FILE} is append-only and maintained by o6y; it cannot be written.`;
+  return undefined;
+}
+
+const IN = z.enum(["global", "project"]).optional().describe("Store for a new object or schema (default: where it already is, else global)");
+const TARGET = z
+  .string()
+  .describe("An object id (type/slug), a schema (type/.schema, or .schema for the store root), or a path inside a store");
+
+export function createServer(opts: ServerOptions): McpServer {
+  const { cwd, env, layers } = opts;
+  const load = () => Store.load(layers);
+  const notes = prepareStores(layers);
+  const instructions = [renderPromptSection(load(), { workPaths: workPaths(cwd), mcp: true }), ...notes.map((n) => `Note: ${n}`)].join("\n\n");
+
+  const server = new McpServer({ name: "o6y", version: packageVersion() }, { instructions });
+  const cliEnv = { ...env, O6Y_HOME: layers[0]!.root, O6Y_PROJECT: (layers[1] ?? layers[0]!).root };
+
+  /** Runs an `o6y` command in-process; exit 1 (rejected) and 2 (usage) are tool errors. */
+  async function cli(argv: string[], { errorOnReject = true } = {}): Promise<ToolResult> {
+    const out: string[] = [];
+    const err: string[] = [];
+    const code = await opts.runCli(argv, {
+      cwd,
+      env: cliEnv,
+      out: (t) => out.push(t),
+      err: (t) => err.push(t),
+      stdin: () => undefined,
+      isTTY: false,
+      fetch: opts.fetch,
+    });
+    const text = [...out, ...err].join("\n").trimEnd() || `(exit ${code})`;
+    return code === 2 || (code !== 0 && errorOnReject) ? fail(text) : ok(text);
+  }
+
+  server.registerTool(
+    "o6y_query",
+    {
+      title: "Find memory objects",
+      description:
+        "Find o6y memory objects by type, field values, links or text (exact matching). Returns one line per object: [[id]] — summary. With no arguments, lists everything (up to limit).",
+      inputSchema: {
+        text: z.string().optional().describe("Case-insensitive substring of id, summary or body"),
+        type: z.string().optional().describe("Only objects of this type"),
+        where: z
+          .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+          .optional()
+          .describe("field -> value; list and link fields match when any element equals"),
+        links_to: z.string().optional().describe("Only objects that link to this id"),
+        linked_from: z.string().optional().describe("Only objects this id links to"),
+        limit: z.number().int().positive().optional().describe("Default 50"),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async (a) => {
+      const argv = ["query"];
+      if (a.type) argv.push("--type", a.type);
+      for (const [k, v] of Object.entries(a.where ?? {})) argv.push("--where", `${k}=${v}`);
+      if (a.links_to) argv.push("--links-to", a.links_to);
+      if (a.linked_from) argv.push("--linked-from", a.linked_from);
+      if (a.text) argv.push("--text", a.text);
+      if (a.limit) argv.push("--limit", String(a.limit));
+      return cli(argv);
+    },
+  );
+
+  server.registerTool(
+    "o6y_search",
+    {
+      title: "Search memory by meaning",
+      description:
+        "Find o6y memory objects relevant to a question. Uses semantic search when the store has it on (Cohere), else word matching. \"No matching objects.\" means memory has nothing on it.",
+      inputSchema: {
+        question: z.string().min(1),
+        type: z.string().optional().describe("Only objects of this type"),
+        limit: z.number().int().positive().optional().describe("Default 10"),
+      },
+      annotations: { readOnlyHint: true },
+    },
+    async (a) => {
+      const argv = ["search", a.question];
+      if (a.type) argv.push("--type", a.type);
+      if (a.limit) argv.push("--limit", String(a.limit));
+      return cli(argv);
+    },
+  );
+
+  server.registerTool(
+    "o6y_show",
+    {
+      title: "Read memory",
+      description:
+        "Read from o6y memory. target: an object id (type/slug; shown with its backlinks), a schema (type/.schema, or .schema for the store root), `index` (the full catalog), `type/index` (one type with its fields, guidance and every object), `manual` (the full o6y manual), or any path inside a store.",
+      inputSchema: { target: z.string().describe("type/slug, type/.schema, .schema, index, type/index, manual, or a store path"), in: IN },
+      annotations: { readOnlyHint: true },
+    },
+    async (a) => {
+      const store = load();
+      const t = resolveTarget(store, layers, cwd, a.target, a.in);
+      if (typeof t === "string") return fail(t);
+      if (t.kind === "manual") return ok(readFileSync(SKILL_PATH, "utf8"));
+      const { info, path } = t;
+      if (info.kind === "root-index") return ok(renderRootIndex(store));
+      if (info.kind === "type-index") {
+        return ok(renderTypeIndex(store, info.type) ?? `No type \`${info.type}\` yet: write its schema (${info.type}/.schema) first.`);
+      }
+      const content = readOrNull(path);
+      if (info.kind === "object") {
+        if (content === null) {
+          const from = store.wanted.get(info.id);
+          return fail(from ? `${info.id} is not written yet. Linked from: ${[...from].sort().join(", ")}` : `No object \`${info.id}\` (${displayPath(path)}).`);
+        }
+        return ok(`${content.trimEnd()}\n${renderObjectFooter(store, info.id, path)}`);
+      }
+      if (content === null) return fail(`${displayPath(path)} does not exist.`);
+      return ok(content);
+    },
+  );
+
+  server.registerTool(
+    "o6y_write",
+    {
+      title: "Write memory",
+      description:
+        "Create or replace an o6y object or schema with the full file content (YAML frontmatter + markdown body). The change is validated against the schemas before anything is saved; a rejected write changes nothing. For a small change to an existing file, o6y_edit is safer.",
+      inputSchema: { target: TARGET, content: z.string().describe("The whole file: ---\\nsummary: ...\\n---\\nbody"), in: IN },
+      annotations: { destructiveHint: true, idempotentHint: true },
+    },
+    async (a) => {
+      const t = resolveTarget(load(), layers, cwd, a.target, a.in);
+      if (typeof t === "string") return fail(t);
+      if (t.kind === "manual") return fail("The manual is part of o6y; it cannot be written.");
+      const managed = managedReason(t.info);
+      if (managed) return fail(`[o6y] ${managed}`);
+      return commitFile(layers, t.path, a.content, "o6y_write");
+    },
+  );
+
+  server.registerTool(
+    "o6y_edit",
+    {
+      title: "Edit memory",
+      description:
+        "Replace text in an existing o6y object or schema. old_string must appear exactly once (or set replace_all). The result is validated before it is saved; a rejected edit changes nothing.",
+      inputSchema: {
+        target: TARGET,
+        old_string: z.string().min(1).describe("Exact text to replace, including whitespace"),
+        new_string: z.string(),
+        replace_all: z.boolean().optional(),
+        in: IN,
+      },
+      annotations: { destructiveHint: true },
+    },
+    async (a) => {
+      const t = resolveTarget(load(), layers, cwd, a.target, a.in);
+      if (typeof t === "string") return fail(t);
+      if (t.kind === "manual") return fail("The manual is part of o6y; it cannot be edited.");
+      const managed = managedReason(t.info);
+      if (managed) return fail(`[o6y] ${managed}`);
+      const current = readOrNull(t.path);
+      if (current === null) return fail(`${displayPath(t.path)} does not exist; create it with o6y_write.`);
+      const count = current.split(a.old_string).length - 1;
+      if (count === 0) return fail("old_string was not found; o6y_show the target to see its current content.");
+      if (count > 1 && !a.replace_all) return fail(`old_string appears ${count} times; add context to make it unique, or set replace_all.`);
+      const next = a.replace_all ? current.split(a.old_string).join(a.new_string) : current.replace(a.old_string, () => a.new_string);
+      return commitFile(layers, t.path, next, "o6y_edit");
+    },
+  );
+
+  server.registerTool(
+    "o6y_cli",
+    {
+      title: "Run an o6y command",
+      description:
+        "Run an `o6y` command, as argv without the leading `o6y`, e.g. [\"mv\", \"note/a\", \"note/b\"], [\"lint\"], [\"field\", \"rename\", \"person\", \"role\", \"title\"], [\"set\", \"note/a\", \"pinned=true\"], [\"rm\", \"note/a\"], [\"help\"]. Write commands validate the whole change before touching anything and accept --dry-run. `[\"help\", \"<command>\"]` shows a command's options.",
+      inputSchema: { args: z.array(z.string()).min(1) },
+      annotations: { destructiveHint: true },
+    },
+    async (a) => {
+      if (NOT_VIA_CLI.has(a.args[0]!)) return fail(`\`o6y ${a.args[0]}\` can't run through o6y_cli.`);
+      const isLint = a.args[0] === "lint";
+      return cli(a.args, { errorOnReject: !isLint });
+    },
+  );
+
+  return server;
+}
+
+function packageVersion(): string {
+  try {
+    return JSON.parse(readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8")).version;
+  } catch {
+    return "0.0.0";
+  }
+}
+
+/** Serves over `transport` until the client disconnects. */
+export async function serve(opts: ServerOptions, transport: Transport): Promise<void> {
+  const server = createServer(opts);
+  const closed = new Promise<void>((resolve) => {
+    server.server.onclose = () => resolve();
+  });
+  await server.connect(transport);
+  await closed;
+}

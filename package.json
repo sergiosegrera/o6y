@@ -1,7 +1,7 @@
 {
   "name": "o6y",
-  "version": "0.8.1",
-  "description": "Typed, validated, interlinked markdown memory (ontology wiki) for the pi coding agent",
+  "version": "0.9.0",
+  "description": "Typed, validated, interlinked markdown memory (ontology wiki) for the pi coding agent (and other agents over MCP)",
   "type": "module",
   "license": "MIT",
   "author": "Sergio Segrera",
@@ -19,7 +19,8 @@
     "memory",
     "wiki",
     "ontology",
-    "agent"
+    "agent",
+    "mcp"
   ],
   "files": [
     "index.ts",
@@ -49,9 +50,11 @@
     "eval": "bun evals/run.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "ink": "^8.0.0",
     "react": "^19.3.0",
-    "yaml": "^2.9.1"
+    "yaml": "^2.9.1",
+    "zod": "^4.6.7"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",

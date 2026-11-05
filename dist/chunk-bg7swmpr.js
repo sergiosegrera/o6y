@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 import {
-  LOG_FILE,
-  Store,
   cacheRoot,
-  displayPath,
   embedderFor,
   neighbors,
   search,
   semanticUnavailable,
-  storeSignature,
   syncIndex
-} from "./chunk-pxet089h.js";
+} from "./chunk-j0bvdvaa.js";
+import {
+  LOG_FILE,
+  Store,
+  displayPath,
+  storeSignature
+} from "./chunk-4m0nbp6g.js";
 
 // src/viewer/run.tsx
 import { spawnSync } from "node:child_process";
