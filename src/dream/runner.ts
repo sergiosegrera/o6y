@@ -35,6 +35,8 @@ export interface DreamOptions {
   limit?: number;
   /** Only sessions started at or after this ISO time. */
   since?: string;
+  /** Read these sessions in full even if already processed; other filters don't apply. */
+  sessions?: string[];
   dryRun?: boolean;
   settings: DreamSettings;
   agent: AgentRunner;
@@ -110,7 +112,7 @@ export async function runDream(opts: DreamOptions): Promise<DreamRun> {
             today: startedAt.slice(0, 10),
             cwd: transcript.cwd,
             pages: pages.length,
-            resumed: Boolean(ledger.sessions[transcript.id]),
+            resumed: !opts.sessions?.length && Boolean(ledger.sessions[transcript.id]),
           }),
           tools: [...storeTools(layers, `pi:${transcript.id}`), transcriptTool(pages)],
           model: models.analyzer,

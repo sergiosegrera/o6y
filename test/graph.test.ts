@@ -64,3 +64,21 @@ test("pages mark managed attributes and don't list them as a field", () => {
   expect(managedLine(undefined)).toBeUndefined();
   expect(plain(managedLine({ updated: "2026-02-03" }, new Date("2026-02-05T12:00:00"))!)).toContain("(2d ago)");
 });
+
+test("a heavily linked hub doesn't blow up the layout", () => {
+  const html = renderGraphHtml({ nodes: [], links: [], types: [] } as never);
+  const source = html.slice(html.indexOf("function tick() {") + "function tick() {".length, html.indexOf("function loop()")).replace(/\}\s*$/, "");
+  const tick = new Function("shown", "links", "dragging", "state", `var MAX_SPEED = ${/MAX_SPEED = (\d+)/.exec(html)![1]}, alpha = state.alpha; ${source}; state.alpha = alpha;`);
+  const nodes: any[] = Array.from({ length: 302 }, (_, i) => ({ x: 14 * Math.sqrt(i + 1) * Math.cos(i * 2.4), y: 14 * Math.sqrt(i + 1) * Math.sin(i * 2.4), vx: 0, vy: 0, near: new Set() }));
+  const links = nodes.slice(1, 291).map((t) => ({ s: nodes[0], t }));
+  for (const { s, t } of links) (s.near.add(t), t.near.add(s));
+  const state = { alpha: 1 };
+  for (let i = 0; i < 320; i++) tick(new Set(nodes), links, null, state);
+  expect(Math.max(...nodes.map((d) => Math.abs(d.x)), ...nodes.map((d) => Math.abs(d.y)))).toBeLessThan(5000);
+});
+
+test("the page's markup has no escape codes from the bundler", () => {
+  const html = renderGraphHtml({ nodes: [], links: [], types: [] } as never);
+  expect(html.slice(0, html.indexOf("<script"))).not.toMatch(/\\[ux][0-9a-fA-F]{2}/);
+  expect(html).toContain("&minus;");
+});

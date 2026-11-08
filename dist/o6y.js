@@ -6,6 +6,9 @@ import {
   dreamInvocation
 } from "./chunk-v6va4yga.js";
 import {
+  sessionsRoot
+} from "./chunk-kvedd0nk.js";
+import {
   buildPromptSection,
   displayPath,
   renderObjectFooter,
@@ -118,10 +121,13 @@ function commit(ctx, plan, via, dryRun) {
 async function runDreamInPi(ctx, o) {
   if (o.limit !== undefined && !/^[1-9]\d*$/.test(o.limit))
     throw new UsageError("--limit must be a positive whole number");
-  const { parseSince, readRuns } = await import("./chunk-wd5047hy.js");
+  const { findUnprocessed, parseSince, readRuns } = await import("./chunk-2p3kn0yg.js");
+  const sessions = (o.session ?? []).flatMap((s) => s.split(",").filter(Boolean));
+  if (sessions.length)
+    findUnprocessed({ env: ctx.env, sessionsDir: sessionsRoot(ctx.env), cwd: ctx.cwd, excludeSession: ctx.env.O6Y_DREAM_EXCLUDE, sessions });
   if (o.since !== undefined && !parseSince(o.since, new Date))
     throw new UsageError("--since needs an age like 30d or 2w, or a date like 2026-10-01");
-  const flags = [o.here && "--here", o.limit && `--limit ${o.limit}`, o.since && `--since ${o.since}`, o["dry-run"] && "--dry-run"].filter(Boolean);
+  const flags = [o.here && "--here", o.limit && `--limit ${o.limit}`, o.since && `--since ${o.since}`, sessions.length && `--session ${sessions.join(",")}`, o["dry-run"] && "--dry-run"].filter(Boolean);
   const previous = readRuns(ctx.env)[0]?.id;
   const { args, env } = dreamInvocation(ctx.layers[0].root, flags, ctx.env);
   const res = spawnSync("pi", args, {
@@ -832,15 +838,15 @@ ${extra}
   },
   dream: {
     usage: `o6y dream [--json]
-       o6y dream run [--here] [--limit N] [--since 30d|DATE] [--dry-run]   (needs pi on PATH; applies without review)`,
+       o6y dream run [--here] [--limit N] [--since 30d|DATE] [--session ID]... [--dry-run]   (needs pi on PATH; applies without review)`,
     summary: "show how many sessions are waiting and the last dream, or run a dream",
-    options: { ...JSON_OPT, ...DRY, here: { type: "boolean" }, limit: { type: "string" }, since: { type: "string" } },
+    options: { ...JSON_OPT, ...DRY, here: { type: "boolean" }, limit: { type: "string" }, since: { type: "string" }, session: { type: "string", multiple: true } },
     async run(ctx, [action], o) {
       if (action === "run")
         return runDreamInPi(ctx, o);
       if (action)
         throw new UsageError("expected `o6y dream` or `o6y dream run`");
-      const { dreamStatus, formatStatus } = await import("./chunk-wd5047hy.js");
+      const { dreamStatus, formatStatus } = await import("./chunk-2p3kn0yg.js");
       const status = dreamStatus(ctx.cwd, ctx.env);
       ctx.out(o.json ? JSON.stringify({ ...status, last: status.last ? { id: status.last.id, status: status.last.status, startedAt: status.last.startedAt, changes: status.last.changes.length, cost: status.last.cost } : null }, null, 2) : formatStatus(status));
       return 0;
@@ -854,7 +860,7 @@ ${extra}
       const store = ctx.load();
       if (o.focus && !store.objects.has(o.focus))
         throw new UsageError(`no object \`${o.focus}\``);
-      const [{ graphData, renderGraphHtml }, { cacheRoot: cacheRoot2 }] = await Promise.all([import("./chunk-jzqfbt58.js"), import("./chunk-2w8dr3rf.js")]);
+      const [{ graphData, renderGraphHtml }, { cacheRoot: cacheRoot2 }] = await Promise.all([import("./chunk-mjfj800e.js"), import("./chunk-2w8dr3rf.js")]);
       const path = o.out ? resolve(ctx.cwd, o.out) : join(cacheRoot2(ctx.env), "graph.html");
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, renderGraphHtml(graphData(store), o.focus), { mode: 384 });
@@ -872,7 +878,7 @@ ${extra}
       if (!ctx.isTTY)
         throw new UsageError("the viewer needs an interactive terminal");
       process.env.NODE_ENV ??= "production";
-      const { runViewer } = await import("./chunk-r6s3ntjd.js");
+      const { runViewer } = await import("./chunk-3vgtpdvg.js");
       await runViewer(ctx.layers, { current: id, view: o.graph ? "graph" : o.dreams ? "dreams" : o.activity ? "activity" : "browse", history: [], filter: "", open: [] });
       return 0;
     }

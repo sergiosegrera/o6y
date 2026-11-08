@@ -122,13 +122,13 @@ label { display:flex; align-items:center; gap:7px; padding:2px 0; cursor:pointer
   </div>
 </aside>
 <aside id="detail" class="card" aria-live="polite">
-  <button id="close" aria-label="Close">×</button>
+  <button id="close" aria-label="Close">&times;</button>
   <h2 id="title"></h2><p id="summary"></p><div id="meta"></div><pre id="body"></pre><div id="near"></div>
 </aside>
 <div id="zoom" class="card" role="group" aria-label="Zoom">
   <button id="zoom-in" title="Zoom in (+)" aria-label="Zoom in">+</button>
-  <button id="zoom-out" title="Zoom out (-)" aria-label="Zoom out">−</button>
-  <button id="zoom-fit" title="Fit everything (0)" aria-label="Fit everything">⤢</button>
+  <button id="zoom-out" title="Zoom out (-)" aria-label="Zoom out">&minus;</button>
+  <button id="zoom-fit" title="Fit everything (0)" aria-label="Fit everything">&#x2922;</button>
 </div>
 <script type="application/json" id="data">__DATA__</script>
 <script>
@@ -140,7 +140,7 @@ label { display:flex; align-items:center; gap:7px; padding:2px 0; cursor:pointer
   data.types.forEach(function (t, i) { color[t] = PALETTE[i % PALETTE.length]; });
   var canvas = document.getElementById("c"), ctx = canvas.getContext("2d");
   var byId = {}, n = data.nodes.length, sizeByLinks = true;
-  var NODE_MIN = 5, NODE_MAX = 18, LABEL_MAX = 40, LABEL_ZOOM = 1.2, ZOOM_MIN = 0.05, ZOOM_MAX = 8;
+  var NODE_MIN = 5, NODE_MAX = 18, LABEL_MAX = 40, LABEL_ZOOM = 1.2, ZOOM_MIN = 0.05, ZOOM_MAX = 8, MAX_SPEED = 40;
   var anim = null, animating = false;
   function radius(d) { return sizeByLinks ? Math.min(NODE_MAX, NODE_MIN + Math.sqrt(d.degree) * 2.4) : NODE_MIN + 1; }
   data.nodes.forEach(function (d, i) {
@@ -188,7 +188,7 @@ label { display:flex; align-items:center; gap:7px; padding:2px 0; cursor:pointer
       a = list[i];
       a.vx -= a.x * 0.012 * alpha; a.vy -= a.y * 0.012 * alpha;
       for (j = i + 1; j < list.length; j++) {
-        b = list[j]; dx = b.x - a.x; dy = b.y - a.y; d2 = dx * dx + dy * dy || 1;
+        b = list[j]; dx = b.x - a.x; dy = b.y - a.y; d2 = Math.max(25, dx * dx + dy * dy);
         if (d2 > 250000) continue;
         f = 900 * alpha / d2;
         a.vx -= dx * f; a.vy -= dy * f; b.vx += dx * f; b.vy += dy * f;
@@ -199,11 +199,16 @@ label { display:flex; align-items:center; gap:7px; padding:2px 0; cursor:pointer
       dx = l.t.x - l.s.x; dy = l.t.y - l.s.y;
       var d = Math.sqrt(dx * dx + dy * dy) || 1;
       f = (d - 70) / d * 0.06 * alpha;
-      l.s.vx += dx * f; l.s.vy += dy * f; l.t.vx -= dx * f; l.t.vy -= dy * f;
+      // A link moves its less connected end; a hub summing every pull at full strength would diverge.
+      var ds = l.s.near.size, dt = l.t.near.size, fs = f * 2 * dt / (ds + dt), ft = f * 2 * ds / (ds + dt);
+      l.s.vx += dx * fs; l.s.vy += dy * fs; l.t.vx -= dx * ft; l.t.vy -= dy * ft;
     });
     list.forEach(function (d) {
       if (d === dragging) { d.vx = d.vy = 0; return; }
-      d.vx *= 0.62; d.vy *= 0.62; d.x += d.vx; d.y += d.vy;
+      d.vx *= 0.62; d.vy *= 0.62;
+      var v = Math.sqrt(d.vx * d.vx + d.vy * d.vy);
+      if (v > MAX_SPEED) { d.vx *= MAX_SPEED / v; d.vy *= MAX_SPEED / v; }
+      d.x += d.vx; d.y += d.vy;
     });
     alpha *= 0.985;
   }

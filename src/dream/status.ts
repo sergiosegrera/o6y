@@ -36,7 +36,26 @@ export function parseSince(value: string, now: Date): string | undefined {
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
-export function findUnprocessed(opts: { env: Record<string, string | undefined>; sessionsDir: string; excludeSession?: string; here?: boolean; cwd: string; since?: string }): PendingTranscript[] {
+/** The named sessions (by id or unique id prefix) in full, whether or not a dream has read them. */
+function forcedSessions(sessionsDir: string, wanted: string[], exclude?: string): PendingTranscript[] {
+  const all = listTranscripts(sessionsDir);
+  const chosen = new Set<PendingTranscript["transcript"]>();
+  for (const id of wanted) {
+    const matches = all.filter((t) => t.id === id).length ? all.filter((t) => t.id === id) : all.filter((t) => t.id.startsWith(id));
+    if (!matches.length) throw new Error(`no session matches \`${id}\``);
+    if (matches.length > 1) throw new Error(`\`${id}\` matches ${matches.length} sessions; use more of the id`);
+    if (matches[0]!.id === exclude) throw new Error(`\`${id}\` is the running session, which is still being written`);
+    chosen.add(matches[0]!);
+  }
+  return all.filter((t) => chosen.has(t)).map((t) => {
+    const part = pendingPart(t, undefined);
+    if (!part) throw new Error(`session ${t.id} has no user messages to read`);
+    return part;
+  });
+}
+
+export function findUnprocessed(opts: { env: Record<string, string | undefined>; sessionsDir: string; excludeSession?: string; here?: boolean; cwd: string; since?: string; sessions?: string[] }): PendingTranscript[] {
+  if (opts.sessions?.length) return forcedSessions(opts.sessionsDir, opts.sessions, opts.excludeSession);
   const ledger = readLedger(dreamsDir(opts.env));
   const out: PendingTranscript[] = [];
   for (const transcript of listTranscripts(opts.sessionsDir)) {

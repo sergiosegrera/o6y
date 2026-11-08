@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.5
+
+- `o6y dream run --session ID` reads specific sessions again in full, even if a dream already processed them. It takes a full id or unique prefix, and can be repeated or comma-separated.
+- **`o6y graph` no longer collapses into a line** when one object has a hundred or more links. The layout stays stable however connected a hub is.
+- The graph page's zoom-out and fit buttons show their icons instead of escape codes.
+
 ## 0.10.4
 
 - **The organizer does real work on big dreams.** It now gets the list of objects the dream created and changed, plus pairs that look alike, and a checklist: duplicates by cause, narration, unearned entries, copies, undeclared fields and size.

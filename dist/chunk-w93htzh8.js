@@ -1,5 +1,10 @@
 #!/usr/bin/env node
 import {
+  listTranscripts,
+  pendingPart,
+  sessionsRoot
+} from "./chunk-kvedd0nk.js";
+import {
   cacheRoot
 } from "./chunk-7ffqdz50.js";
 import {
@@ -7,8 +12,8 @@ import {
 } from "./chunk-byp1kbkq.js";
 
 // src/dream/status.ts
-import { readdirSync as readdirSync3, readFileSync as readFileSync3 } from "node:fs";
-import { join as join3 } from "node:path";
+import { readdirSync as readdirSync2, readFileSync as readFileSync2 } from "node:fs";
+import { join as join2 } from "node:path";
 
 // src/dream/state.ts
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -39,81 +44,6 @@ function dreamRunning(dir) {
   }
 }
 
-// src/dream/transcript.ts
-import { readdirSync as readdirSync2, readFileSync as readFileSync2 } from "node:fs";
-import { homedir } from "node:os";
-import { join as join2 } from "node:path";
-function sessionsRoot(env) {
-  return env.PI_CODING_AGENT_SESSION_DIR || join2(homedir(), ".pi", "agent", "sessions");
-}
-function jsonlFiles(dir, out = []) {
-  let entries;
-  try {
-    entries = readdirSync2(dir, { withFileTypes: true });
-  } catch {
-    return out;
-  }
-  for (const entry of entries) {
-    const full = join2(dir, entry.name);
-    if (entry.isDirectory())
-      jsonlFiles(full, out);
-    else if (entry.name.endsWith(".jsonl"))
-      out.push(full);
-  }
-  return out;
-}
-function parseTranscript(file, text) {
-  const parsed = [];
-  for (const line of text.split(`
-`)) {
-    if (!line.trim())
-      continue;
-    try {
-      parsed.push(JSON.parse(line));
-    } catch {}
-  }
-  const header = parsed[0];
-  if (header?.type !== "session" || typeof header.id !== "string")
-    return;
-  return { id: header.id, file, cwd: String(header.cwd ?? ""), startedAt: String(header.timestamp ?? ""), entries: parsed.slice(1) };
-}
-function listTranscripts(root) {
-  const out = [];
-  for (const file of jsonlFiles(root)) {
-    let text;
-    try {
-      text = readFileSync2(file, "utf8");
-    } catch {
-      continue;
-    }
-    const transcript = parseTranscript(file, text);
-    if (transcript)
-      out.push(transcript);
-  }
-  return out.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
-}
-function activeBranch(entries) {
-  const byId = new Map(entries.filter((e) => e.id).map((e) => [e.id, e]));
-  const leaf = entries.findLast((e) => e.id);
-  const branch = [];
-  const seen = new Set;
-  for (let at = leaf;at?.id && !seen.has(at.id); at = at.parentId ? byId.get(at.parentId) : undefined) {
-    seen.add(at.id);
-    branch.push(at);
-  }
-  return branch.reverse();
-}
-var hasUserMessage = (entries) => entries.some((e) => e.type === "message" && e.message?.role === "user");
-function pendingPart(transcript, doneLeaf) {
-  const branch = activeBranch(transcript.entries);
-  const leaf = branch.at(-1)?.id;
-  if (!leaf || leaf === doneLeaf)
-    return;
-  const from = doneLeaf ? branch.findIndex((e) => e.id === doneLeaf) + 1 : 0;
-  const entries = branch.slice(from);
-  return hasUserMessage(entries) ? { transcript, entries, leaf } : undefined;
-}
-
 // src/dream/status.ts
 function parseSince(value, now) {
   const age = /^([1-9]\d*)([dw])$/.exec(value);
@@ -124,7 +54,29 @@ function parseSince(value, now) {
   const date = new Date(`${value}T00:00:00`);
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
+function forcedSessions(sessionsDir, wanted, exclude) {
+  const all = listTranscripts(sessionsDir);
+  const chosen = new Set;
+  for (const id of wanted) {
+    const matches = all.filter((t) => t.id === id).length ? all.filter((t) => t.id === id) : all.filter((t) => t.id.startsWith(id));
+    if (!matches.length)
+      throw new Error(`no session matches \`${id}\``);
+    if (matches.length > 1)
+      throw new Error(`\`${id}\` matches ${matches.length} sessions; use more of the id`);
+    if (matches[0].id === exclude)
+      throw new Error(`\`${id}\` is the running session, which is still being written`);
+    chosen.add(matches[0]);
+  }
+  return all.filter((t) => chosen.has(t)).map((t) => {
+    const part = pendingPart(t, undefined);
+    if (!part)
+      throw new Error(`session ${t.id} has no user messages to read`);
+    return part;
+  });
+}
 function findUnprocessed(opts) {
+  if (opts.sessions?.length)
+    return forcedSessions(opts.sessionsDir, opts.sessions, opts.excludeSession);
   const ledger = readLedger(dreamsDir(opts.env));
   const out = [];
   for (const transcript of listTranscripts(opts.sessionsDir)) {
@@ -141,17 +93,17 @@ function findUnprocessed(opts) {
   return out;
 }
 function readRuns(env) {
-  const root = join3(dreamsDir(env), "runs");
+  const root = join2(dreamsDir(env), "runs");
   let ids;
   try {
-    ids = readdirSync3(root);
+    ids = readdirSync2(root);
   } catch {
     return [];
   }
   const runs = [];
   for (const id of ids) {
     try {
-      const run = JSON.parse(readFileSync3(join3(root, id, "run.json"), "utf8"));
+      const run = JSON.parse(readFileSync2(join2(root, id, "run.json"), "utf8"));
       if (run.status === "running" && !(run.pid && pidAlive(run.pid))) {
         run.status = "aborted";
         run.error = "the process running this dream ended before it finished; nothing was applied";

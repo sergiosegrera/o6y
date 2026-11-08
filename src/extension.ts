@@ -418,7 +418,7 @@ export default function o6y(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("o6y-dream", {
-    description: "Consolidate past sessions into memory. Options: --dry-run, --here (this directory only), --limit N, --since 30d|YYYY-MM-DD",
+    description: "Consolidate past sessions into memory. Options: --dry-run, --here (this directory only), --limit N, --since 30d|YYYY-MM-DD, --session ID[,ID] (run these again)",
     handler: async (args, ctx) => {
       if (!layers.length) configure(ctx.cwd);
       const words = args.trim().split(/\s+/).filter(Boolean);
@@ -447,6 +447,7 @@ export default function o6y(pi: ExtensionAPI) {
           here: words.includes("--here"),
           limit,
           since,
+          sessions: words.flatMap((w, i) => (words[i - 1] === "--session" ? w.split(",").filter(Boolean) : [])),
           dryRun: words.includes("--dry-run"),
           settings: load().dream,
           agent: sdkAgent(ctx, pi.getThinkingLevel()),

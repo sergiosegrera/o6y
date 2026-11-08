@@ -65,6 +65,29 @@ test("--since accepts ages and dates, and filters by when a session started", ()
   expect(findUnprocessed({ ...options(writer()), since: "2026-11-02T00:00:00.000Z" })).toHaveLength(0);
 });
 
+test("--session reads named sessions again in full", async () => {
+  session("abc-1", [user("1", null, "first")]);
+  session("abd-2", [user("1", null, "second")]);
+  await runDream(options(writer()));
+  expect(findUnprocessed(options(writer()))).toHaveLength(0);
+
+  const forced = findUnprocessed({ ...options(writer()), sessions: ["abc"] });
+  expect(forced.map((p) => p.transcript.id)).toEqual(["abc-1"]);
+  expect(forced[0]!.entries).toHaveLength(1);
+
+  const prompts: string[] = [];
+  const run = await runDream({ ...options(async ({ role, prompt }) => {
+    if (role === "analyzer") prompts.push(prompt);
+    return { text: "ok", cost: 0, tokens: 0 };
+  }), sessions: ["abc-1"] });
+  expect(run.sessions.map((s) => s.id)).toEqual(["abc-1"]);
+  expect(prompts[0]).not.toContain("continues a session");
+
+  expect(() => findUnprocessed({ ...options(writer()), sessions: ["ab"] })).toThrow("matches 2");
+  expect(() => findUnprocessed({ ...options(writer()), sessions: ["zzz"] })).toThrow("no session matches");
+  expect(() => findUnprocessed({ ...options(writer()), sessions: ["abc"], excludeSession: "abc-1" })).toThrow("running session");
+});
+
 test("the organizer is told what the dream changed and what looks alike", async () => {
   mkdirSync(join(g, "note"), { recursive: true });
   writeFileSync(join(g, "note/menu-locator-trap.md"), "---\nsummary: Menu locator fails inside the overflow popover\n---\nOld.\n");
