@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.3
+
+- **The viewer's dream page handles big batches.** Totals come first, then failures and changes, with sessions that found nothing folded into a count per directory. `x` shows every session in full, `[`/`]` jump between sections, and the footer shows your position.
+
 ## 0.10.2
 
 - **`o6y graph` stays readable on big stores.** Names show only for the selected or hovered node until few enough nodes are in view. Zoom is smooth and works with pinch, wheel, `+`/`-`/`0`, buttons and double-click; picking a node from search or the side panel flies to it.

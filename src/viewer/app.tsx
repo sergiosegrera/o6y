@@ -192,6 +192,7 @@ export function App({ layers, initial, onEdit }: Props) {
   const [dreamNote, setDreamNote] = useState<string | undefined>();
   const [dreamLive, setDreamLive] = useState(false);
   const [dreamTick, setDreamTick] = useState(0);
+  const [dreamDetail, setDreamDetail] = useState(false);
   // Follows a dream from any process; one more refresh after it ends shows the result.
   const dreamWasRunning = useRef(false);
   useEffect(() => {
@@ -240,13 +241,13 @@ export function App({ layers, initial, onEdit }: Props) {
   const page = useMemo(() => {
     if (view === "activity") return actRow ? renderActivityPage(store, actRow, rightWidth, changedIds) : undefined;
     if (view === "graph") return { lines: renderLocalGraph(store, graphNodes, adj, sideSelected, rightWidth, innerHeight), links: [], linkLines: [] };
-    if (view === "dreams") return dream ? renderDreamPage(store, dream, rightWidth) : undefined;
+    if (view === "dreams") return dream ? renderDreamPage(store, dream, rightWidth, dreamDetail) : undefined;
     if (view === "search") return hit && store.objects.has(hit.id) ? renderPage(store, hit.id, rightWidth, changedIds) : undefined;
     if (!selectedKey) return undefined;
     if (selectedKey.startsWith("type:")) return renderTypePage(store, selectedKey.slice(5), rightWidth);
     if (selectedKey === WANTED_KEY) return renderWantedPage(store, rightWidth);
     return renderPage(store, selectedKey, rightWidth, changedIds);
-  }, [store, view, actRow, dream, hit, selectedKey, rightWidth, changedIds, graphNodes, adj, sideSelected, innerHeight]);
+  }, [store, view, actRow, dream, dreamDetail, hit, selectedKey, rightWidth, changedIds, graphNodes, adj, sideSelected, innerHeight]);
 
   const go = (target: string, push = true) => {
     if (target === selectedKey) return;
@@ -386,6 +387,15 @@ export function App({ layers, initial, onEdit }: Props) {
       const { unprocessed, here } = dreamStatus(process.cwd(), process.env);
       if (!unprocessed) return setDreamNote("no sessions are waiting");
       return setDreamAsk(newDreamForm(unprocessed, here));
+    }
+    if (view === "dreams" && input === "x") {
+      setScroll(0);
+      return setDreamDetail((d) => !d);
+    }
+    if (view === "dreams" && focus === "page" && (input === "[" || input === "]")) {
+      const sections = page?.sections ?? [];
+      const target = input === "]" ? sections.find((i) => i > scroll) : [...sections].reverse().find((i) => i < scroll);
+      return setScroll(target === undefined ? (input === "]" ? scroll : 0) : Math.min(maxScroll, target));
     }
     if (input === "q") return exit();
     if (input === "/") {
@@ -612,7 +622,9 @@ export function App({ layers, initial, onEdit }: Props) {
   const footerText = searching
     ? null
     : view === "dreams"
-      ? "↑↓ move  ⏎/→ page  R run a dream  1 browse  2 activity  4 graph  ? search  q"
+      ? focus === "page"
+        ? `${maxScroll ? `${scroll + 1}-${Math.min(page?.lines.length ?? 0, scroll + innerHeight)} of ${page?.lines.length}  ` : ""}↑↓/space scroll  [ ] section  g/G top/end  x ${dreamDetail ? "fold" : "details"}  n/N link  ⏎ go  ←/esc list  q`
+        : `↑↓ move  ⏎/→ page  x ${dreamDetail ? "fold" : "details"}  R run a dream  1 browse  2 activity  4 graph  ? search  q`
     : view === "graph"
       ? `↑↓ move  ⏎/→ center  b back  +/- depth (${graphDepth})  o open in browse  e edit  1 browse  ? search  q`
       : narrow

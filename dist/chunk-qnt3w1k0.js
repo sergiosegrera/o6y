@@ -114,6 +114,7 @@ function dreamFormLines(f, info, width) {
 }
 
 // src/viewer/model.ts
+import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { stringify } from "yaml";
@@ -621,27 +622,67 @@ function dreamLine(run, width, selected) {
     { text: truncate(right.padStart(Math.max(0, width - left.length)), Math.max(0, width - left.length)), color: DREAM_COLOR[run.status], dim: !selected }
   ];
 }
-function renderDreamPage(store, run, width) {
+var shortCount = (n) => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
+function shortDuration(ms) {
+  const minutes = Math.round(ms / 60000);
+  if (minutes < 1)
+    return `${Math.max(1, Math.round(ms / 1000))}s`;
+  return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+var homeless = (path) => path === homedir() || path.startsWith(`${homedir()}/`) ? `~${path.slice(homedir().length)}` : path;
+var foundNothing = (summary) => /nothing durable/i.test(summary.slice(0, 120));
+function renderDreamPage(store, run, width, detail = false) {
   const links = [];
   const linkLines = [];
   const lines = [];
-  const wrapped = (text, indent = "  ") => lines.push(...wrap(text.trim().replace(/\s+/g, " "), Math.max(10, width - indent.length)).map((t) => [{ text: indent + t, dim: true }]));
-  const heading = (text) => lines.push([], [{ text, bold: true, color: "magenta" }]);
-  const ok = run.sessions.filter((s) => s.ok).length;
+  const sections = [];
+  const clean = (text) => text.trim().replace(/\s+/g, " ");
+  const wrapped = (text, indent = "  ", most = Infinity) => {
+    const rows = wrap(clean(text), Math.max(10, width - indent.length));
+    const shown = rows.slice(0, most);
+    if (rows.length > most)
+      shown[most - 1] = `${truncate(shown[most - 1], Math.max(10, width - indent.length - 1))}…`;
+    lines.push(...shown.map((t) => [{ text: indent + t, dim: true }]));
+  };
+  const heading = (text) => {
+    lines.push([]);
+    sections.push(lines.length);
+    lines.push([{ text, bold: true, color: "magenta" }]);
+  };
+  const running = run.status === "running";
+  const working = run.sessions.filter((s) => running && !s.ok && !s.summary);
+  const failed = run.sessions.filter((s) => !s.ok && s.summary);
+  const nothing = run.sessions.filter((s) => s.ok && foundNothing(s.summary));
+  const found = run.sessions.filter((s) => s.ok && !foundNothing(s.summary));
+  const ok = found.length + nothing.length;
+  const dim = (text) => [{ text: truncate(text, width), dim: true }];
   lines.push([{ text: dreamWhen(run), bold: true }, { text: ` ${run.status}`, color: DREAM_COLOR[run.status], bold: true }]);
-  if (run.status === "running")
+  if (running)
     lines.push([{ text: `now: ${run.step ?? "starting"}`, color: "cyan" }]);
-  lines.push([{ text: `${ok}/${run.planned ?? run.sessions.length} sessions · ${run.changes.length} changes · $${run.cost.toFixed(4)} · ${run.tokens} tokens`, dim: true }]);
+  lines.push(dim([`${ok}/${run.planned ?? run.sessions.length} sessions`, failed.length && `${failed.length} failed`, nothing.length && `${nothing.length} found nothing`].filter(Boolean).join(" · ")));
+  const byAction = ["create", "update", "delete"].map((action) => ({ action, mark: ACTION_MARK[action], changes: run.changes.filter((c) => c.action === action) }));
+  const tally = byAction.filter((g) => g.changes.length).map((g) => `${g.mark.mark}${g.changes.length}`).join(" ");
+  lines.push(dim(`${run.changes.length} change${run.changes.length === 1 ? "" : "s"}${tally ? `: ${tally}` : ""}`));
+  const elapsed = (run.finishedAt ? new Date(run.finishedAt).getTime() : Date.now()) - new Date(run.startedAt).getTime();
+  lines.push(dim([`$${run.cost.toFixed(4)}`, ok > 1 && `$${(run.cost / ok).toFixed(4)}/session`, `${shortCount(run.tokens)} tokens`, shortDuration(elapsed)].filter(Boolean).join(" · ")));
   const model = run.models.analyzer === run.models.organizer ? run.models.analyzer || "session model" : `${run.models.analyzer || "session model"} / ${run.models.organizer || "session model"}`;
   lines.push([{ text: truncate(model, width), dim: true }]);
   if (run.error) {
     heading("Not applied");
     wrapped(run.error);
   }
-  heading("Changes");
+  if (failed.length) {
+    heading(`Failed (${failed.length})`);
+    for (const s of failed) {
+      lines.push([{ text: "  ✗ ", color: "red" }, { text: truncate(homeless(s.cwd), Math.max(4, width - 4)) }]);
+      lines.push(dim(`    ${s.id}`));
+      wrapped(s.summary, "    ", detail ? Infinity : 2);
+    }
+  }
+  heading(`Changes (${run.changes.length})`);
   if (!run.changes.length)
-    lines.push([{ text: run.status === "running" ? "  applied when the dream finishes" : "  none", dim: true }]);
-  for (const c of run.changes) {
+    lines.push([{ text: running ? "  applied when the dream finishes" : "  none", dim: true }]);
+  for (const c of byAction.flatMap((g) => g.changes)) {
     const id = c.path.split("/").slice(-2).join("/").replace(/\.md$/, "");
     const exists = store.objects.has(id);
     if (exists) {
@@ -661,24 +702,42 @@ function renderDreamPage(store, run, width) {
     for (const path of run.conflicts)
       lines.push([{ text: `  ${truncate(path.split("/").slice(-2).join("/"), width - 2)}`, color: "yellow" }]);
   }
-  heading("Sessions");
-  for (const s of run.sessions) {
-    const working = run.status === "running" && !s.ok && !s.summary;
-    lines.push([{ text: working ? "  ⋯ " : s.ok ? "  ✓ " : "  ✗ ", color: working ? "cyan" : s.ok ? "green" : "red" }, { text: truncate(s.cwd, Math.max(4, width - 4)) }]);
-    lines.push([{ text: `    ${truncate(s.id, Math.max(4, width - 4))}`, dim: true }]);
-    if (s.summary)
-      wrapped(s.summary, "    ");
-  }
   if (run.organizer) {
-    heading(run.organizer.ok ? "Organizer" : run.status === "running" ? "Organizer (working)" : "Organizer failed");
+    heading(run.organizer.ok ? "Organizer" : running ? "Organizer (working)" : "Organizer failed");
     if (run.organizer.summary)
       wrapped(run.organizer.summary);
+  }
+  if (working.length) {
+    heading("Working on");
+    for (const s of working)
+      lines.push([{ text: "  ⋯ ", color: "cyan" }, { text: truncate(homeless(s.cwd), Math.max(4, width - 4)) }]);
+  }
+  if (found.length) {
+    heading(`Sessions with findings (${found.length})`);
+    for (const s of found) {
+      lines.push([{ text: "  ✓ ", color: "green" }, { text: truncate(homeless(s.cwd), Math.max(4, width - 4)) }]);
+      if (detail)
+        lines.push(dim(`    ${s.id}`));
+      wrapped(s.summary, "    ", detail ? Infinity : 2);
+    }
+  }
+  if (nothing.length) {
+    heading(`Found nothing (${nothing.length})`);
+    const dirs = new Map;
+    for (const s of nothing)
+      dirs.set(s.cwd, [...dirs.get(s.cwd) ?? [], s.id]);
+    for (const [cwd, ids] of [...dirs].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))) {
+      lines.push([{ text: String(ids.length).padStart(5), dim: true }, { text: ` ${truncate(homeless(cwd), Math.max(4, width - 6))}` }]);
+      if (detail)
+        for (const id of ids)
+          lines.push(dim(`      ${id}`));
+    }
   }
   if (run.snapshot) {
     heading("Store before this dream");
     wrapped(run.snapshot);
   }
-  return { lines, links, linkLines };
+  return { lines, links, linkLines, sections };
 }
 function searchLine(store, hit, width, selected, threshold) {
   const score = `${hit.score.toFixed(2)} `;
@@ -987,6 +1046,7 @@ function App({ layers, initial, onEdit }) {
   const [dreamNote, setDreamNote] = useState();
   const [dreamLive, setDreamLive] = useState(false);
   const [dreamTick, setDreamTick] = useState(0);
+  const [dreamDetail, setDreamDetail] = useState(false);
   const dreamWasRunning = useRef(false);
   useEffect(() => {
     if (view !== "dreams")
@@ -1033,7 +1093,7 @@ function App({ layers, initial, onEdit }) {
     if (view === "graph")
       return { lines: renderLocalGraph(store, graphNodes, adj, sideSelected, rightWidth, innerHeight), links: [], linkLines: [] };
     if (view === "dreams")
-      return dream ? renderDreamPage(store, dream, rightWidth) : undefined;
+      return dream ? renderDreamPage(store, dream, rightWidth, dreamDetail) : undefined;
     if (view === "search")
       return hit && store.objects.has(hit.id) ? renderPage(store, hit.id, rightWidth, changedIds) : undefined;
     if (!selectedKey)
@@ -1043,7 +1103,7 @@ function App({ layers, initial, onEdit }) {
     if (selectedKey === WANTED_KEY)
       return renderWantedPage(store, rightWidth);
     return renderPage(store, selectedKey, rightWidth, changedIds);
-  }, [store, view, actRow, dream, hit, selectedKey, rightWidth, changedIds, graphNodes, adj, sideSelected, innerHeight]);
+  }, [store, view, actRow, dream, dreamDetail, hit, selectedKey, rightWidth, changedIds, graphNodes, adj, sideSelected, innerHeight]);
   const go = (target, push = true) => {
     if (target === selectedKey)
       return;
@@ -1209,6 +1269,15 @@ function App({ layers, initial, onEdit }) {
       if (!unprocessed)
         return setDreamNote("no sessions are waiting");
       return setDreamAsk(newDreamForm(unprocessed, here));
+    }
+    if (view === "dreams" && input === "x") {
+      setScroll(0);
+      return setDreamDetail((d) => !d);
+    }
+    if (view === "dreams" && focus === "page" && (input === "[" || input === "]")) {
+      const sections = page?.sections ?? [];
+      const target = input === "]" ? sections.find((i) => i > scroll) : [...sections].reverse().find((i) => i < scroll);
+      return setScroll(target === undefined ? input === "]" ? scroll : 0 : Math.min(maxScroll, target));
     }
     if (input === "q")
       return exit();
@@ -1569,7 +1638,7 @@ function App({ layers, initial, onEdit }) {
       })
     ]
   });
-  const footerText = searching ? null : view === "dreams" ? "↑↓ move  ⏎/→ page  R run a dream  1 browse  2 activity  4 graph  ? search  q" : view === "graph" ? `↑↓ move  ⏎/→ center  b back  +/- depth (${graphDepth})  o open in browse  e edit  1 browse  ? search  q` : narrow ? view === "browse" ? focus === "list" ? "↑↓ g/G · ⏎→ open · ← close · x/X all · [ ] · 2 activity · / ?" : "↑↓␣ g/G scroll · n/N link · ⏎ go · ← list · e" : focus === "list" ? view === "activity" ? "↑↓ g/G · ⏎→ open · ← close · x/X all · [ ] · o · 1 · ?" : "↑↓ g/G · ⏎→ page · o open · 1 browse · ?" : "↑↓␣ g/G scroll · n/N link · ⏎ go · ← list · o · e" : view === "browse" ? focus === "list" ? "↑↓ move  g/G top/bottom  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next type  tab page  2 activity  3 dreams  / filter  ? search  b back  e edit  q" : "↑↓/j/k/space scroll  g/G top/bottom  n/N next/prev link  enter follow  ←/esc list  2 activity  ? search  b back  e edit  q quit" : focus === "list" ? view === "activity" ? "↑↓ move  g/G top/bottom  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next day  o open in browse  tab page  1 browse  ? search  e edit  q" : "↑↓ move  g/G top/bottom  ⏎/→ page  o open in browse  tab page  1 browse  2 activity  ? search  e edit  q" : "↑↓/j/k/space scroll  g/G top/bottom  n/N next/prev link  enter follow  ←/esc list  o open in browse  e edit  q quit";
+  const footerText = searching ? null : view === "dreams" ? focus === "page" ? `${maxScroll ? `${scroll + 1}-${Math.min(page?.lines.length ?? 0, scroll + innerHeight)} of ${page?.lines.length}  ` : ""}↑↓/space scroll  [ ] section  g/G top/end  x ${dreamDetail ? "fold" : "details"}  n/N link  ⏎ go  ←/esc list  q` : `↑↓ move  ⏎/→ page  x ${dreamDetail ? "fold" : "details"}  R run a dream  1 browse  2 activity  4 graph  ? search  q` : view === "graph" ? `↑↓ move  ⏎/→ center  b back  +/- depth (${graphDepth})  o open in browse  e edit  1 browse  ? search  q` : narrow ? view === "browse" ? focus === "list" ? "↑↓ g/G · ⏎→ open · ← close · x/X all · [ ] · 2 activity · / ?" : "↑↓␣ g/G scroll · n/N link · ⏎ go · ← list · e" : focus === "list" ? view === "activity" ? "↑↓ g/G · ⏎→ open · ← close · x/X all · [ ] · o · 1 · ?" : "↑↓ g/G · ⏎→ page · o open · 1 browse · ?" : "↑↓␣ g/G scroll · n/N link · ⏎ go · ← list · o · e" : view === "browse" ? focus === "list" ? "↑↓ move  g/G top/bottom  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next type  tab page  2 activity  3 dreams  / filter  ? search  b back  e edit  q" : "↑↓/j/k/space scroll  g/G top/bottom  n/N next/prev link  enter follow  ←/esc list  2 activity  ? search  b back  e edit  q quit" : focus === "list" ? view === "activity" ? "↑↓ move  g/G top/bottom  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next day  o open in browse  tab page  1 browse  ? search  e edit  q" : "↑↓ move  g/G top/bottom  ⏎/→ page  o open in browse  tab page  1 browse  2 activity  ? search  e edit  q" : "↑↓/j/k/space scroll  g/G top/bottom  n/N next/prev link  enter follow  ←/esc list  o open in browse  e edit  q quit";
   const footer = asking ? /* @__PURE__ */ jsxs(Text, {
     wrap: "truncate",
     children: [

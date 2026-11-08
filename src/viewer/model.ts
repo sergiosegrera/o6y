@@ -3,6 +3,7 @@
  * and search results.
  * Lines are arrays of styled segments so they can be rendered by Ink or tested as plain text.
  */
+import { homedir } from "node:os";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { stringify } from "yaml";
@@ -207,6 +208,8 @@ export interface Page {
   links: string[];
   /** Index in `lines` where each entry of `links` is listed. */
   linkLines: number[];
+  /** Index in `lines` of each section heading, for jumping between them. */
+  sections?: number[];
 }
 
 /** The page for an object or wanted page: header, fields, body, links and backlinks. */
@@ -585,28 +588,73 @@ export function dreamLine(run: DreamRun, width: number, selected: boolean): Line
   ];
 }
 
-/** The right-hand page for a dream: what it read, what it changed, what it cost. */
-export function renderDreamPage(store: Store, run: DreamRun, width: number): Page {
+const shortCount = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(n));
+function shortDuration(ms: number): string {
+  const minutes = Math.round(ms / 60000);
+  if (minutes < 1) return `${Math.max(1, Math.round(ms / 1000))}s`;
+  return minutes < 60 ? `${minutes}m` : `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
+}
+const homeless = (path: string) => (path === homedir() || path.startsWith(`${homedir()}/`) ? `~${path.slice(homedir().length)}` : path);
+/** Analyzers open with this when a session held nothing worth keeping. */
+const foundNothing = (summary: string) => /nothing durable/i.test(summary.slice(0, 120));
+
+/**
+ * The right-hand page for a dream, built to stay usable at hundreds of sessions: totals first,
+ * then problems and changes, with sessions that found nothing folded into one line per directory.
+ * `detail` shows every session's id and whole summary.
+ */
+export function renderDreamPage(store: Store, run: DreamRun, width: number, detail = false): Page {
   const links: string[] = [];
   const linkLines: number[] = [];
   const lines: Line[] = [];
-  const wrapped = (text: string, indent = "  ") => lines.push(...wrap(text.trim().replace(/\s+/g, " "), Math.max(10, width - indent.length)).map((t): Line => [{ text: indent + t, dim: true }]));
-  const heading = (text: string) => lines.push([], [{ text, bold: true, color: "magenta" }]);
-  const ok = run.sessions.filter((s) => s.ok).length;
+  const sections: number[] = [];
+  const clean = (text: string) => text.trim().replace(/\s+/g, " ");
+  const wrapped = (text: string, indent = "  ", most = Infinity) => {
+    const rows = wrap(clean(text), Math.max(10, width - indent.length));
+    const shown = rows.slice(0, most);
+    if (rows.length > most) shown[most - 1] = `${truncate(shown[most - 1]!, Math.max(10, width - indent.length - 1))}…`;
+    lines.push(...shown.map((t): Line => [{ text: indent + t, dim: true }]));
+  };
+  const heading = (text: string) => {
+    lines.push([]);
+    sections.push(lines.length);
+    lines.push([{ text, bold: true, color: "magenta" }]);
+  };
+
+  const running = run.status === "running";
+  const working = run.sessions.filter((s) => running && !s.ok && !s.summary);
+  const failed = run.sessions.filter((s) => !s.ok && s.summary);
+  const nothing = run.sessions.filter((s) => s.ok && foundNothing(s.summary));
+  const found = run.sessions.filter((s) => s.ok && !foundNothing(s.summary));
+  const ok = found.length + nothing.length;
+  const dim = (text: string): Line => [{ text: truncate(text, width), dim: true }];
 
   lines.push([{ text: dreamWhen(run), bold: true }, { text: ` ${run.status}`, color: DREAM_COLOR[run.status], bold: true }]);
-  if (run.status === "running") lines.push([{ text: `now: ${run.step ?? "starting"}`, color: "cyan" }]);
-  lines.push([{ text: `${ok}/${run.planned ?? run.sessions.length} sessions · ${run.changes.length} changes · $${run.cost.toFixed(4)} · ${run.tokens} tokens`, dim: true }]);
+  if (running) lines.push([{ text: `now: ${run.step ?? "starting"}`, color: "cyan" }]);
+  lines.push(dim([`${ok}/${run.planned ?? run.sessions.length} sessions`, failed.length && `${failed.length} failed`, nothing.length && `${nothing.length} found nothing`].filter(Boolean).join(" · ")));
+  const byAction = (["create", "update", "delete"] as const).map((action) => ({ action, mark: ACTION_MARK[action], changes: run.changes.filter((c) => c.action === action) }));
+  const tally = byAction.filter((g) => g.changes.length).map((g) => `${g.mark.mark}${g.changes.length}`).join(" ");
+  lines.push(dim(`${run.changes.length} change${run.changes.length === 1 ? "" : "s"}${tally ? `: ${tally}` : ""}`));
+  const elapsed = (run.finishedAt ? new Date(run.finishedAt).getTime() : Date.now()) - new Date(run.startedAt).getTime();
+  lines.push(dim([`$${run.cost.toFixed(4)}`, ok > 1 && `$${(run.cost / ok).toFixed(4)}/session`, `${shortCount(run.tokens)} tokens`, shortDuration(elapsed)].filter(Boolean).join(" · ")));
   const model = run.models.analyzer === run.models.organizer ? run.models.analyzer || "session model" : `${run.models.analyzer || "session model"} / ${run.models.organizer || "session model"}`;
   lines.push([{ text: truncate(model, width), dim: true }]);
   if (run.error) {
     heading("Not applied");
     wrapped(run.error);
   }
+  if (failed.length) {
+    heading(`Failed (${failed.length})`);
+    for (const s of failed) {
+      lines.push([{ text: "  ✗ ", color: "red" }, { text: truncate(homeless(s.cwd), Math.max(4, width - 4)) }]);
+      lines.push(dim(`    ${s.id}`));
+      wrapped(s.summary, "    ", detail ? Infinity : 2);
+    }
+  }
 
-  heading("Changes");
-  if (!run.changes.length) lines.push([{ text: run.status === "running" ? "  applied when the dream finishes" : "  none", dim: true }]);
-  for (const c of run.changes) {
+  heading(`Changes (${run.changes.length})`);
+  if (!run.changes.length) lines.push([{ text: running ? "  applied when the dream finishes" : "  none", dim: true }]);
+  for (const c of byAction.flatMap((g) => g.changes)) {
     const id = c.path.split("/").slice(-2).join("/").replace(/\.md$/, "");
     const exists = store.objects.has(id);
     if (exists) {
@@ -625,23 +673,37 @@ export function renderDreamPage(store: Store, run: DreamRun, width: number): Pag
     heading("Kept the live version (edited during the dream)");
     for (const path of run.conflicts) lines.push([{ text: `  ${truncate(path.split("/").slice(-2).join("/"), width - 2)}`, color: "yellow" }]);
   }
-
-  heading("Sessions");
-  for (const s of run.sessions) {
-    const working = run.status === "running" && !s.ok && !s.summary;
-    lines.push([{ text: working ? "  ⋯ " : s.ok ? "  ✓ " : "  ✗ ", color: working ? "cyan" : s.ok ? "green" : "red" }, { text: truncate(s.cwd, Math.max(4, width - 4)) }]);
-    lines.push([{ text: `    ${truncate(s.id, Math.max(4, width - 4))}`, dim: true }]);
-    if (s.summary) wrapped(s.summary, "    ");
-  }
   if (run.organizer) {
-    heading(run.organizer.ok ? "Organizer" : run.status === "running" ? "Organizer (working)" : "Organizer failed");
+    heading(run.organizer.ok ? "Organizer" : running ? "Organizer (working)" : "Organizer failed");
     if (run.organizer.summary) wrapped(run.organizer.summary);
+  }
+
+  if (working.length) {
+    heading("Working on");
+    for (const s of working) lines.push([{ text: "  ⋯ ", color: "cyan" }, { text: truncate(homeless(s.cwd), Math.max(4, width - 4)) }]);
+  }
+  if (found.length) {
+    heading(`Sessions with findings (${found.length})`);
+    for (const s of found) {
+      lines.push([{ text: "  ✓ ", color: "green" }, { text: truncate(homeless(s.cwd), Math.max(4, width - 4)) }]);
+      if (detail) lines.push(dim(`    ${s.id}`));
+      wrapped(s.summary, "    ", detail ? Infinity : 2);
+    }
+  }
+  if (nothing.length) {
+    heading(`Found nothing (${nothing.length})`);
+    const dirs = new Map<string, string[]>();
+    for (const s of nothing) dirs.set(s.cwd, [...(dirs.get(s.cwd) ?? []), s.id]);
+    for (const [cwd, ids] of [...dirs].sort((a, b) => b[1].length - a[1].length || a[0].localeCompare(b[0]))) {
+      lines.push([{ text: String(ids.length).padStart(5), dim: true }, { text: ` ${truncate(homeless(cwd), Math.max(4, width - 6))}` }]);
+      if (detail) for (const id of ids) lines.push(dim(`      ${id}`));
+    }
   }
   if (run.snapshot) {
     heading("Store before this dream");
     wrapped(run.snapshot);
   }
-  return { lines, links, linkLines };
+  return { lines, links, linkLines, sections };
 }
 
 // ── semantic search results ──────────────────────────────────────────────

@@ -279,3 +279,24 @@ test("a dream's agents get the store's guidance, after the defaults it overrides
   expect(system.indexOf("The repo wins.")).toBeGreaterThan(system.indexOf("Before every write"));
   expect(withInstructions("base", "", "")).toBe("base");
 });
+
+test("a large dream's page leads with totals and folds sessions that found nothing", async () => {
+  const store = Store.load(makeLayers(g));
+  const session = (i: number, cwd: string, ok: boolean, summary: string) => ({ id: `s${i}`, file: "", cwd, ok, summary });
+  const run = {
+    id: "r", status: "partial" as const, startedAt: "2026-11-01T00:00:00.000Z", finishedAt: "2026-11-01T01:05:00.000Z", models: { analyzer: "m", organizer: "m" }, unprocessed: 230,
+    sessions: [...Array.from({ length: 200 }, (_, i) => session(i, i % 2 ? "/work/a" : "/work/b", true, "nothing durable")), session(200, "/work/a", true, `Found a trap. ${"long ".repeat(400)}`), session(201, "/work/c", false, "failed: timeout")],
+    changes: [{ action: "update", path: "/x/note/u.md" }, { action: "create", path: "/x/note/c.md" }], conflicts: [], cost: 2.02, tokens: 3_400_000,
+  };
+  const text = (detail: boolean) => renderDreamPage(store, run, 70, detail);
+  const folded = text(false).lines.map((l) => l.map((s) => s.text).join(""));
+  expect(folded.length).toBeLessThan(40);
+  expect(folded[1]).toBe("201/202 sessions · 1 failed · 200 found nothing");
+  expect(folded[2]).toBe("2 changes: +1 ~1");
+  expect(folded[3]).toBe("$2.0200 · $0.0100/session · 3.4M tokens · 1h 5m");
+  expect(folded.indexOf("Failed (1)")).toBeLessThan(folded.indexOf("Changes (2)"));
+  expect(folded.findIndex((l) => l.includes("+ note/c"))).toBeLessThan(folded.findIndex((l) => l.includes("~ note/u")));
+  expect(folded.some((l) => l.includes("100 /work/a"))).toBe(true);
+  expect(text(false).sections!.map((i) => folded[i])).toContain("Found nothing (200)");
+  expect(text(true).lines.length).toBeGreaterThan(200);
+});
