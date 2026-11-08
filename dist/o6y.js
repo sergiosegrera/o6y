@@ -852,7 +852,7 @@ ${extra}
       const store = ctx.load();
       if (o.focus && !store.objects.has(o.focus))
         throw new UsageError(`no object \`${o.focus}\``);
-      const [{ graphData, renderGraphHtml }, { cacheRoot: cacheRoot2 }] = await Promise.all([import("./chunk-h1dd4z1b.js"), import("./chunk-6v8s5pkm.js")]);
+      const [{ graphData, renderGraphHtml }, { cacheRoot: cacheRoot2 }] = await Promise.all([import("./chunk-wpmybkhf.js"), import("./chunk-6v8s5pkm.js")]);
       const path = o.out ? resolve(ctx.cwd, o.out) : join(cacheRoot2(ctx.env), "graph.html");
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, renderGraphHtml(graphData(store), o.focus), { mode: 384 });
@@ -870,7 +870,7 @@ ${extra}
       if (!ctx.isTTY)
         throw new UsageError("the viewer needs an interactive terminal");
       process.env.NODE_ENV ??= "production";
-      const { runViewer } = await import("./chunk-axhp5yg7.js");
+      const { runViewer } = await import("./chunk-ysd8fy44.js");
       await runViewer(ctx.layers, { current: id, view: o.graph ? "graph" : o.dreams ? "dreams" : o.activity ? "activity" : "browse", history: [], filter: "", open: [] });
       return 0;
     }

@@ -18,7 +18,7 @@ import {
 import {
   adjacency,
   graphData
-} from "./chunk-g81sfh45.js";
+} from "./chunk-4dxykps9.js";
 import {
   neighbors
 } from "./chunk-9q7vjba0.js";

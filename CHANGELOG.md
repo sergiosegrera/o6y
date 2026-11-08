@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.2
+
+- **`o6y graph` stays readable on big stores.** Names show only for the selected or hovered node until few enough nodes are in view. Zoom is smooth and works with pinch, wheel, `+`/`-`/`0`, buttons and double-click; picking a node from search or the side panel flies to it.
+
 ## 0.10.1
 
 - **Dreams write less, and less lookup data.** Analyzers now correct memory first, change nothing by default, and test every write: could a future agent read this from a file or a command? New objects need a one-line reason, and entries stay short. The organizer can cut lookups, shorten, delete objects with nothing else in them, and trim pinned objects over budget.
