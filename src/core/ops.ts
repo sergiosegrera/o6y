@@ -113,7 +113,7 @@ export interface Neighbors {
   in: Edge[];
 }
 
-function outgoing(obj: ObjectEntry): Map<string, string[]> {
+export function outgoing(obj: ObjectEntry): Map<string, string[]> {
   const out = new Map<string, string[]>();
   const add = (target: string, via: string) => {
     if (target === obj.id) return;

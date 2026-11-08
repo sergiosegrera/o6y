@@ -3,8 +3,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { displayPath } from "../core/render.ts";
 import { cacheRoot, embedderFor, search as semanticSearch, semanticUnavailable, syncIndex } from "../core/semantic.ts";
 import { type Layer, Store } from "../core/store.ts";
+import { adjacency, graphData } from "../core/graph.ts";
+import { spawn } from "node:child_process";
+import { dreamInvocation } from "../dream/launch.ts";
+import { costPerSession, type DreamForm, dreamFormFlags, dreamFormLines, newDreamForm, updateDreamForm } from "./dreamForm.ts";
+import { dreamsDir, dreamRunning } from "../dream/state.ts";
+import { dreamStatus, readRuns } from "../dream/status.ts";
+import { busiest, graphLine, localGraph, renderLocalGraph } from "./graph.ts";
 import {
   activityLine,
+  dreamLine,
+  renderDreamPage,
   activityRows,
   activityTarget,
   type Line,
@@ -25,7 +34,7 @@ import {
 } from "./model.ts";
 import { watchStores } from "./watch.ts";
 
-export type View = "browse" | "activity" | "search";
+export type View = "browse" | "activity" | "dreams" | "graph" | "search";
 
 export interface SearchResults {
   query: string;
@@ -45,6 +54,7 @@ export interface ViewerState {
   /** Cursor in the activity or search list, expanded activity days and batches, and the last search. */
   sideKey?: string;
   activityOpen?: string[];
+  graphCenter?: string;
   results?: SearchResults;
 }
 
@@ -134,7 +144,7 @@ export function App({ layers, initial, onEdit }: Props) {
   const innerHeight = bodyHeight - 2;
   /** One pane at a time (list or page) below this width, e.g. in a side pane. */
   const narrow = columns < 80;
-  const leftWidth = narrow ? columns - 2 : view === "activity" ? clamp(Math.floor(columns * 0.4), 30, 56) : clamp(Math.floor(columns * 0.3), 24, 44);
+  const leftWidth = narrow ? columns - 2 : view === "activity" || view === "dreams" || view === "graph" ? clamp(Math.floor(columns * 0.4), 30, 56) : clamp(Math.floor(columns * 0.3), 24, 44);
   const rightWidth = narrow ? Math.max(10, columns - 4) : Math.max(10, columns - leftWidth - 6);
 
   // ── selection ──
@@ -171,27 +181,72 @@ export function App({ layers, initial, onEdit }: Props) {
   const activity = useMemo(() => readActivity(layers), [layers, loadedAt]);
   const actRows = useMemo(() => activityRows(activity, activityOpen), [activity, activityOpen]);
   const hits = results?.hits ?? [];
+  const adj = useMemo(() => adjacency(graphData(store)), [store]);
+  const [graphCenter, setGraphCenter] = useState<string | undefined>(initial.graphCenter);
+  const [graphBack, setGraphBack] = useState<string[]>([]);
+  const [graphDepth, setGraphDepth] = useState(1);
+  const center = graphCenter && adj.has(graphCenter) ? graphCenter : busiest(adj);
+  const graphNodes = useMemo(() => (view === "graph" && center ? localGraph(adj, center, graphDepth) : []), [view, adj, center, graphDepth]);
+  /** Dreams tab: the dialog while choosing what to run, and a dream started from here. */
+  const [dreamAsk, setDreamAsk] = useState<DreamForm | undefined>();
+  const [dreamNote, setDreamNote] = useState<string | undefined>();
+  const [dreamLive, setDreamLive] = useState(false);
+  const [dreamTick, setDreamTick] = useState(0);
+  // Follows a dream from any process; one more refresh after it ends shows the result.
+  const dreamWasRunning = useRef(false);
+  useEffect(() => {
+    if (view !== "dreams") return;
+    const timer = setInterval(() => {
+      const running = dreamRunning(dreamsDir(process.env));
+      if (running || dreamWasRunning.current) setDreamTick((n) => n + 1);
+      dreamWasRunning.current = running;
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [view]);
+  const startDream = (flags: string[]) => {
+    setDreamAsk(undefined);
+    setSideKey(undefined);
+    setDreamNote(undefined);
+    setDreamLive(true);
+    const { args, env } = dreamInvocation(layers[0]!.root, flags, process.env);
+    // Detached, so quitting the viewer doesn't end a dream part-way.
+    const child = spawn("pi", args, { env: env as NodeJS.ProcessEnv, stdio: "ignore", detached: true });
+    child.unref();
+    child.on("error", (err) => {
+      setDreamLive(false);
+      setDreamNote(`could not start pi: ${err.message}`);
+    });
+    child.on("close", (code) => {
+      setDreamLive(false);
+      if (code) setDreamNote(`pi exited with code ${code}`);
+      reload();
+    });
+  };
+  const dreams = useMemo(() => (view === "dreams" ? readRuns(process.env) : []), [view, loadedAt, dreamTick]);
   /** Keys of the side list's rows. */
   const sideKeys = useMemo(
-    () => (view === "activity" ? actRows.map((r) => r.key) : view === "search" ? hits.map((h) => h.key) : []),
-    [view, actRows, hits],
+    () => (view === "activity" ? actRows.map((r) => r.key) : view === "dreams" ? dreams.map((d) => d.id) : view === "graph" ? graphNodes.map((n) => n.id) : view === "search" ? hits.map((h) => h.key) : []),
+    [view, actRows, dreams, graphNodes, hits],
   );
   const sideIndex = sideKey && sideKeys.includes(sideKey) ? sideKeys.indexOf(sideKey) : sideKeys.length ? 0 : -1;
   const sideSelected = sideIndex >= 0 ? sideKeys[sideIndex] : undefined;
   const actRow = view === "activity" ? actRows.find((r) => r.key === sideSelected) : undefined;
   const hit = view === "search" ? hits.find((h) => h.key === sideSelected) : undefined;
+  const dream = view === "dreams" ? dreams.find((d) => d.id === sideSelected) : undefined;
   /** The object the page shows, for `e` (edit) and `o` (open in browse). */
-  const pageObject = view === "browse" ? id : view === "activity" ? (actRow ? activityTarget(store, actRow).object : undefined) : hit?.id;
+  const pageObject = view === "browse" ? id : view === "activity" ? (actRow ? activityTarget(store, actRow).object : undefined) : view === "graph" ? (sideSelected && store.objects.has(sideSelected) ? sideSelected : undefined) : hit?.id;
   const threshold = store.semantic.threshold;
 
   const page = useMemo(() => {
     if (view === "activity") return actRow ? renderActivityPage(store, actRow, rightWidth, changedIds) : undefined;
+    if (view === "graph") return { lines: renderLocalGraph(store, graphNodes, adj, sideSelected, rightWidth, innerHeight), links: [], linkLines: [] };
+    if (view === "dreams") return dream ? renderDreamPage(store, dream, rightWidth) : undefined;
     if (view === "search") return hit && store.objects.has(hit.id) ? renderPage(store, hit.id, rightWidth, changedIds) : undefined;
     if (!selectedKey) return undefined;
     if (selectedKey.startsWith("type:")) return renderTypePage(store, selectedKey.slice(5), rightWidth);
     if (selectedKey === WANTED_KEY) return renderWantedPage(store, rightWidth);
     return renderPage(store, selectedKey, rightWidth, changedIds);
-  }, [store, view, actRow, hit, selectedKey, rightWidth, changedIds]);
+  }, [store, view, actRow, dream, hit, selectedKey, rightWidth, changedIds, graphNodes, adj, sideSelected, innerHeight]);
 
   const go = (target: string, push = true) => {
     if (target === selectedKey) return;
@@ -271,7 +326,7 @@ export function App({ layers, initial, onEdit }: Props) {
   const edit = () => {
     const obj = pageObject ? store.objects.get(pageObject) : undefined;
     if (!obj) return;
-    onEdit(obj.path, { current, view, history, filter, open: [...open], sideKey: sideSelected, activityOpen: [...activityOpen], results });
+    onEdit(obj.path, { current, view, history, filter, open: [...open], sideKey: sideSelected, activityOpen: [...activityOpen], results, graphCenter: center });
     exit();
   };
 
@@ -296,6 +351,16 @@ export function App({ layers, initial, onEdit }: Props) {
       else if (input && !key.ctrl && !key.meta) setFilter((f) => f + input);
       return;
     }
+    if (dreamAsk) {
+      if (key.escape || input === "q") setDreamAsk(undefined);
+      else if (key.return) startDream(dreamFormFlags(dreamAsk));
+      else if (key.upArrow || key.downArrow || key.tab || input === "j" || input === "k") setDreamAsk(updateDreamForm(dreamAsk, key.upArrow || input === "k" ? "up" : "down"));
+      else if (key.leftArrow || input === "h") setDreamAsk(updateDreamForm(dreamAsk, "left"));
+      else if (key.rightArrow || input === "l") setDreamAsk(updateDreamForm(dreamAsk, "right"));
+      else if (input === "a") setDreamAsk(updateDreamForm(dreamAsk, "all"));
+      else if (/^\d+$/.test(input)) setDreamAsk([...input].reduce((f, d) => updateDreamForm(f, d as `${number}`), dreamAsk));
+      return;
+    }
     // Several keys can arrive in one chunk (key repeat, paste).
     if (input.length > 1 && !key.ctrl && !key.meta) {
       if (input.startsWith("/")) {
@@ -315,6 +380,12 @@ export function App({ layers, initial, onEdit }: Props) {
         return view === "browse" ? moveList(delta) : moveSide(delta);
       }
       input = input[input.length - 1]!;
+    }
+    if (input === "R" && view === "dreams") {
+      if (dreamLive || dreamRunning(dreamsDir(process.env))) return setDreamNote("a dream is already running");
+      const { unprocessed, here } = dreamStatus(process.cwd(), process.env);
+      if (!unprocessed) return setDreamNote("no sessions are waiting");
+      return setDreamAsk(newDreamForm(unprocessed, here));
     }
     if (input === "q") return exit();
     if (input === "/") {
@@ -337,9 +408,25 @@ export function App({ layers, initial, onEdit }: Props) {
     };
     if (input === "1") return switchTo("browse");
     if (input === "2" || input === "a") return switchTo("activity");
-    if (input === "3" && results) return switchTo("search");
+    if (input === "3" || input === "d") return switchTo("dreams");
+    if (input === "4" && view !== "graph") {
+      // What this tab shows, or else what is highlighted in browse (the dreams tab shows no object).
+      if (pageObject ?? id) setGraphCenter(pageObject ?? id);
+      setSideKey(undefined);
+      return switchTo("graph");
+    }
+    if (input === "5" && results) return switchTo("search");
     if (input === "e") return edit();
     if (input === "r") return reload();
+    if ((input === "b" || key.backspace || key.delete) && view === "graph") {
+      const prev = graphBack[graphBack.length - 1];
+      if (prev) {
+        setGraphBack((h) => h.slice(0, -1));
+        setGraphCenter(prev);
+        setSideKey(undefined);
+      }
+      return;
+    }
     if (input === "b" || key.backspace || key.delete) return back();
 
     if (input === "o" && pageObject && view !== "browse") return follow(pageObject);
@@ -393,6 +480,19 @@ export function App({ layers, initial, onEdit }: Props) {
         if (target !== undefined) moveSide(target - sideIndex);
         return;
       }
+    }
+
+    if (view === "graph" && focus === "list") {
+      if (key.return || key.rightArrow || input === "l") {
+        if (sideSelected && center && sideSelected !== center) {
+          setGraphBack((h) => [...h.slice(-49), center]);
+          setGraphCenter(sideSelected);
+          setSideKey(undefined);
+        }
+        return;
+      }
+      if (input === "+" || input === "=") return setGraphDepth((d) => Math.min(3, d + 1));
+      if (input === "-") return setGraphDepth((d) => Math.max(1, d - 1));
     }
 
     // Activity and search lists: move, open the page.
@@ -468,7 +568,7 @@ export function App({ layers, initial, onEdit }: Props) {
   // ── header ──
   const errors = store.errors().length;
   const warnings = store.issues.filter((i) => i.severity === "warning").length;
-  const stores = layers.map((l) => `${l.name} ${displayPath(l.root)}`).join("  ");
+  const stores = displayPath(layers[0]!.root);
   const time = loadedAt.toLocaleTimeString([], { hour12: false });
   const header = (
     <Box width={columns}>
@@ -478,7 +578,9 @@ export function App({ layers, initial, onEdit }: Props) {
           <Text> </Text>
           <Text inverse={view === "browse"} bold={view === "browse"}>{narrow ? " 1 " : " 1 browse "}</Text>
           <Text inverse={view === "activity"} bold={view === "activity"}>{narrow ? " 2 " : " 2 activity "}</Text>
-          {results ? <Text inverse={view === "search"} bold={view === "search"}>{narrow ? " 3 " : " 3 search "}</Text> : null}
+          <Text inverse={view === "dreams"} bold={view === "dreams"}>{narrow ? " 3 " : " 3 dreams "}</Text>
+          <Text inverse={view === "graph"} bold={view === "graph"}>{narrow ? " 4 " : " 4 graph "}</Text>
+          {results ? <Text inverse={view === "search"} bold={view === "search"}>{narrow ? " 5 " : " 5 search "}</Text> : null}
           {narrow ? null : <Text dimColor>  {stores}</Text>}
         </Text>
       </Box>
@@ -509,7 +611,11 @@ export function App({ layers, initial, onEdit }: Props) {
   // ── footer ──
   const footerText = searching
     ? null
-    : narrow
+    : view === "dreams"
+      ? "↑↓ move  ⏎/→ page  R run a dream  1 browse  2 activity  4 graph  ? search  q"
+    : view === "graph"
+      ? `↑↓ move  ⏎/→ center  b back  +/- depth (${graphDepth})  o open in browse  e edit  1 browse  ? search  q`
+      : narrow
       ? view === "browse"
         ? focus === "list"
           ? "↑↓ g/G · ⏎→ open · ← close · x/X all · [ ] · 2 activity · / ?"
@@ -521,7 +627,7 @@ export function App({ layers, initial, onEdit }: Props) {
           : "↑↓␣ g/G scroll · n/N link · ⏎ go · ← list · o · e"
       : view === "browse"
         ? focus === "list"
-          ? "↑↓ move  g/G top/bottom  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next type  tab page  2 activity  / filter  ? search  b back  e edit  q"
+          ? "↑↓ move  g/G top/bottom  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next type  tab page  2 activity  3 dreams  / filter  ? search  b back  e edit  q"
           : "↑↓/j/k/space scroll  g/G top/bottom  n/N next/prev link  enter follow  ←/esc list  2 activity  ? search  b back  e edit  q quit"
         : focus === "list"
           ? view === "activity"
@@ -570,6 +676,19 @@ export function App({ layers, initial, onEdit }: Props) {
       lines = actRows.map((r) => ({ key: r.key, line: activityLine(store, r, w, selectedOnList && r.key === sideSelected, changedIds) }));
       selectedLine = Math.max(0, actRows.findIndex((r) => r.key === sideSelected));
       if (!actRows.length) lines = [{ key: "empty", line: [{ text: " no activity logged yet", dim: true }] }];
+    } else if (view === "dreams") {
+      lines = dreams.map((d) => ({ key: d.id, line: dreamLine(d, w, selectedOnList && d.id === sideSelected) }));
+      selectedLine = Math.max(0, dreams.findIndex((d) => d.id === sideSelected));
+      const note = dreams[0]?.status === "running" ? undefined : dreamLive || dreamRunning(dreamsDir(process.env)) ? " dreaming…" : dreamNote;
+      if (note) {
+        lines.unshift({ key: "note", line: [{ text: truncate(note, w), color: "yellow" }] });
+        selectedLine += 1;
+      }
+      if (!dreams.length && !note) lines = [{ key: "empty", line: [{ text: " no dreams yet; run /o6y-dream in pi", dim: true }] }];
+    } else if (view === "graph") {
+      lines = graphNodes.map((n) => ({ key: n.id, line: graphLine(store, n, adj, w, selectedOnList && n.id === sideSelected) }));
+      selectedLine = Math.max(0, graphNodes.findIndex((n) => n.id === sideSelected));
+      if (!graphNodes.length) lines = [{ key: "empty", line: [{ text: " nothing to graph yet", dim: true }] }];
     } else {
       const head: Line = [{ text: truncate(`? ${results?.query ?? ""}`, w), color: "cyan", bold: true }];
       lines = [{ key: "query", line: head }];
@@ -591,6 +710,9 @@ export function App({ layers, initial, onEdit }: Props) {
       });
     }
     const start = clamp(selectedLine - Math.floor(innerHeight / 2), 0, Math.max(0, lines.length - innerHeight));
+    const dialogWidth = Math.min(58, columns - 2);
+    const models = [...new Set([store.dream.analyzerModel || store.dream.model, store.dream.organizerModel || store.dream.model])].map((m) => m || "pi's default").join(", ");
+    const dialog = dreamAsk ? dreamFormLines(dreamAsk, { model: models, perSession: costPerSession(dreams) }, dialogWidth - 2) : [];
     return (
       <Box flexDirection="column" width={columns} height={rows}>
         {header}
@@ -605,6 +727,13 @@ export function App({ layers, initial, onEdit }: Props) {
           {pagePane}
         </Box>
         {footer}
+        {dreamAsk ? (
+          <Box position="absolute" top={Math.max(0, Math.floor((rows - dialog.length - 2) / 2))} left={Math.floor((columns - dialogWidth) / 2)} width={dialogWidth} flexDirection="column" borderStyle="round" borderColor="yellow">
+            {dialog.map((line, i) => (
+              <LineView key={i} line={line} />
+            ))}
+          </Box>
+        ) : null}
       </Box>
     );
   }
@@ -612,7 +741,6 @@ export function App({ layers, initial, onEdit }: Props) {
   // ── browse ──
   const listStart = clamp(cursor - Math.floor(innerHeight / 2), 0, Math.max(0, tree.length - innerHeight));
   const visibleRows = tree.slice(listStart, listStart + innerHeight);
-  const multiLayer = layers.length > 1;
   return (
     <Box flexDirection="column" width={columns} height={rows}>
       {header}
@@ -625,9 +753,8 @@ export function App({ layers, initial, onEdit }: Props) {
             const isCursor = index === cursor;
             if (row.kind === "type" || row.kind === "wanted-header") {
               const name = row.kind === "type" ? row.name : "wanted";
-              const extra = row.kind === "type" && multiLayer && row.layer === "project" ? " project" : "";
               const label = `${row.open ? "▾" : "▸"} ${name}`;
-              const count = ` ${row.count}${extra}`;
+              const count = ` ${row.count}`;
               return (
                 <Text key={rowKey(row)} wrap="truncate">
                   <Text bold color={row.kind === "type" ? "magenta" : "red"} inverse={isCursor && focus === "list"}>

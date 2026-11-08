@@ -34,7 +34,6 @@ Updates replace only o6y's code and skill. Your memory lives in the stores and i
 | Setting | Default | Override |
 |---|---|---|
 | Global store | `~/.agents/o6y` | `O6Y_HOME` or `--o6y-global <path>` |
-| Project store | `<cwd>/.agents/o6y` | `O6Y_PROJECT` or `--o6y-project <path>` |
 
 Four minimal starter types are seeded into an empty global store:
 - `person`: people, with optional review notes
@@ -82,7 +81,13 @@ semantic:
 
 See SPEC.md for the models and the rest of the settings.
 
-## Other agents (MCP)
+## Dreaming
+
+`/o6y-dream` reads past pi sessions and brings memory in line with them: an analyzer per session corrects and adds to memory, then an organizer tidies the result. Changes apply automatically and may touch anything in the store; the previous state is kept under `$O6Y_CACHE/dreams/runs`. Use `--dry-run` to count unprocessed sessions, `--here` for this directory only and `--limit N` for a smaller batch. Transcripts are sent to the configured model. Set the model and other options in a `dream:` block in the root schema (see SPEC.md). Run `o6y dream` to see how many sessions are waiting and how the last dream went, and `o6y dream run [--here] [--limit N] [--dry-run]` to run one from the command line, which needs `pi` on your PATH.
+
+## Other agents (MCP, deprecated)
+
+> **Deprecated:** o6y is a pi extension, and `o6y mcp` will be removed in a future release.
 
 `o6y mcp` serves the same stores as a local MCP server over stdio, for agents other than pi (Claude Code, Codex, Cursor…). Add it to your agent:
 
@@ -97,7 +102,7 @@ command = "npx"
 args = ["-y", "github:sergiosegrera/o6y#v0.9.0", "mcp"]
 ```
 
-Stores are found as for the CLI: `O6Y_HOME` / `O6Y_PROJECT`, `o6y --global DIR --project DIR mcp`, or `~/.agents/o6y` and `<cwd>/.agents/o6y`, where the cwd is the directory the agent starts the server in (usually the project).
+The store is found as for the CLI: `O6Y_HOME`, `o6y --global DIR mcp`, or `~/.agents/o6y`.
 
 MCP clients' own tools can't be hooked, so the server provides tools in their place:
 - `o6y_show`: read an object (with backlinks), a schema (`person/.schema`, `.schema`), the catalog (`index`, `person/index`), the manual (`manual`), or any path in a store
@@ -123,7 +128,9 @@ o6y                                             # viewer; o6y view --activity op
 
 - **Browse** (`1`): types and objects on the left; the selected page on the right, with its fields, body, links and backlinks.
 - **Activity** (`2` / `a`): a timeline of the store, newest first, by day. It shows every create (`+`), update (`~`) and delete (`−`) from `log.md`, with what made it (`write`, `edit`, `bash`, `o6y mv`…). Like the browse list, days start collapsed: `enter`/`→` expands one, `←` collapses it, `x`/`X` collapse or expand them all, and `[`/`]` jump between days. A collapsed day's page lists all its changes. Changes made together, like a bash migration, collapse into one row that expands the same way. The selected object's page is on the right, under a line saying what happened. `o` opens it in browse.
-- **Search** (`?`, with semantic search on): type a question and press `enter` to rank objects by meaning. A line marks the threshold, so you see what the agent would and wouldn't be suggested for that message. The results stay under `3`.
+- **Search** (`?`, with semantic search on): type a question and press `enter` to rank objects by meaning. A line marks the threshold, so you see what the agent would and wouldn't be suggested for that message. The results stay under `5`.
+- **Dreams** (`3` or `d`, or `o6y view --dreams`): every dream with what it read, what it changed and what it cost. `enter` on the page follows a changed object. `R` opens a dialog to choose which sessions and how many (capped at 5 to start, oldest first), then runs the dream in the background. A running dream, started from anywhere, shows up here and updates as it goes.
+- **Graph** (`4`, or `o6y view --graph`): the selected object and what links to it. `enter` re-centres, `b` goes back, and `+`/`-` change the depth. For the whole store, `o6y graph` opens an interactive page in your browser; it fetches nothing and stays on your machine, and can size nodes by their links.
 - **Hot reload**: changes to the store, whether made by the agent or by you, show up immediately. Changed objects are marked `•`, and the header shows the error and warning counts.
 - **Narrow panes** (e.g. a cmux or tmux side pane): below 80 columns, every view shows one pane at a time (`enter` opens the page, `←` goes back to the list).
 - **Keys**: `g`/`G` (or `Home`/`End`) jump to the top or bottom of a list or page. On a page, `j`/`k` scroll and `n`/`N` pick a link; `enter` follows a link, `b` goes back, `/` filters the browse list by id, summary and body, `e` opens the object in `$EDITOR`, and `q` quits.

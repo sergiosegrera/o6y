@@ -1,26 +1,30 @@
 #!/usr/bin/env node
 import {
-  Plan,
   workPaths
-} from "./chunk-yngwefga.js";
+} from "./chunk-jd52nexw.js";
+import {
+  displayPath,
+  renderObjectFooter,
+  renderPromptSection,
+  renderRootIndex,
+  renderTypeIndex
+} from "./chunk-j881ctwp.js";
+import {
+  Plan,
+  appendLog,
+  bootstrap,
+  ensureFormat
+} from "./chunk-w5dq0wfg.js";
 import {
   INDEX_FILE,
   LOG_FILE,
   SCHEMA_FILE,
   Store,
-  appendLog,
-  bootstrap,
   canonicalPath,
   classifyPath,
-  displayPath,
-  ensureFormat,
   formatIssues,
-  parseId,
-  renderObjectFooter,
-  renderPromptSection,
-  renderRootIndex,
-  renderTypeIndex
-} from "./chunk-4m0nbp6g.js";
+  parseId
+} from "./chunk-h52xt07b.js";
 
 // src/mcp/server.ts
 import { existsSync, readFileSync } from "node:fs";
@@ -59,13 +63,11 @@ function prepareStores(layers) {
   }
   return notes;
 }
-function resolveTarget(store, layers, cwd, target, layerName) {
+function resolveTarget(store, layers, cwd, target) {
   const t = target.trim();
   if (t === "manual")
     return { kind: "manual" };
-  const layer = layerName ? layers.find((l) => l.name === layerName) : layers[0];
-  if (!layer)
-    return `\`in\` must be one of: ${layers.map((l) => l.name).join(", ")}`;
+  const layer = layers[0];
   let path;
   if (t.startsWith("/") || t.startsWith("~") || t.startsWith(".")) {
     if (t === SCHEMA_FILE.replace(/\.md$/, ""))
@@ -79,14 +81,11 @@ function resolveTarget(store, layers, cwd, target, layerName) {
     if (!type || rest === undefined)
       return `\`${t}\` is not a target; use type/slug, type/.schema, .schema, index, type/index, manual or a store path`;
     if (rest === ".schema" || rest === "index") {
-      const existing = store.types.get(type);
-      const root = layerName || !existing ? layer.root : existing.layer.root;
-      path = join(root, type, rest === "index" ? INDEX_FILE : SCHEMA_FILE);
+      path = join(layer.root, type, rest === "index" ? INDEX_FILE : SCHEMA_FILE);
     } else {
       if (!parseId(t))
         return `\`${t}\` is not a valid id; use type/slug in kebab-case, e.g. note/release-train`;
-      const existing = store.objects.get(t);
-      path = existing && !layerName ? existing.path : join(layer.root, type, `${rest}.md`);
+      path = join(layer.root, type, `${rest}.md`);
     }
   }
   path = canonicalPath(path);
@@ -132,7 +131,6 @@ function managedReason(info) {
     return `${LOG_FILE} is append-only and maintained by o6y; it cannot be written.`;
   return;
 }
-var IN = z.enum(["global", "project"]).optional().describe("Store for a new object or schema (default: where it already is, else global)");
 var TARGET = z.string().describe("An object id (type/slug), a schema (type/.schema, or .schema for the store root), or a path inside a store");
 function createServer(opts) {
   const { cwd, env, layers } = opts;
@@ -142,7 +140,7 @@ function createServer(opts) {
 
 `);
   const server = new McpServer({ name: "o6y", version: packageVersion() }, { instructions });
-  const cliEnv = { ...env, O6Y_HOME: layers[0].root, O6Y_PROJECT: (layers[1] ?? layers[0]).root };
+  const cliEnv = { ...env, O6Y_HOME: layers[0].root };
   async function cli(argv, { errorOnReject = true } = {}) {
     const out = [];
     const err = [];
@@ -209,11 +207,11 @@ function createServer(opts) {
   server.registerTool("o6y_show", {
     title: "Read memory",
     description: "Read from o6y memory. target: an object id (type/slug; shown with its backlinks), a schema (type/.schema, or .schema for the store root), `index` (the full catalog), `type/index` (one type with its fields, guidance and every object), `manual` (the full o6y manual), or any path inside a store.",
-    inputSchema: { target: z.string().describe("type/slug, type/.schema, .schema, index, type/index, manual, or a store path"), in: IN },
+    inputSchema: { target: z.string().describe("type/slug, type/.schema, .schema, index, type/index, manual, or a store path") },
     annotations: { readOnlyHint: true }
   }, async (a) => {
     const store = load();
-    const t = resolveTarget(store, layers, cwd, a.target, a.in);
+    const t = resolveTarget(store, layers, cwd, a.target);
     if (typeof t === "string")
       return fail(t);
     if (t.kind === "manual")
@@ -240,10 +238,10 @@ ${renderObjectFooter(store, info.id, path)}`);
   server.registerTool("o6y_write", {
     title: "Write memory",
     description: "Create or replace an o6y object or schema with the full file content (YAML frontmatter + markdown body). The change is validated against the schemas before anything is saved; a rejected write changes nothing. For a small change to an existing file, o6y_edit is safer.",
-    inputSchema: { target: TARGET, content: z.string().describe("The whole file: ---\\nsummary: ...\\n---\\nbody"), in: IN },
+    inputSchema: { target: TARGET, content: z.string().describe("The whole file: ---\\nsummary: ...\\n---\\nbody") },
     annotations: { destructiveHint: true, idempotentHint: true }
   }, async (a) => {
-    const t = resolveTarget(load(), layers, cwd, a.target, a.in);
+    const t = resolveTarget(load(), layers, cwd, a.target);
     if (typeof t === "string")
       return fail(t);
     if (t.kind === "manual")
@@ -260,12 +258,11 @@ ${renderObjectFooter(store, info.id, path)}`);
       target: TARGET,
       old_string: z.string().min(1).describe("Exact text to replace, including whitespace"),
       new_string: z.string(),
-      replace_all: z.boolean().optional(),
-      in: IN
+      replace_all: z.boolean().optional()
     },
     annotations: { destructiveHint: true }
   }, async (a) => {
-    const t = resolveTarget(load(), layers, cwd, a.target, a.in);
+    const t = resolveTarget(load(), layers, cwd, a.target);
     if (typeof t === "string")
       return fail(t);
     if (t.kind === "manual")

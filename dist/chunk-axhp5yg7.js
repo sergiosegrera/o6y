@@ -1,18 +1,39 @@
 #!/usr/bin/env node
 import {
+  dreamInvocation
+} from "./chunk-v6va4yga.js";
+import {
+  dreamRunning,
+  dreamStatus,
+  dreamsDir,
+  readRuns
+} from "./chunk-21mbrgke.js";
+import {
+  displayPath
+} from "./chunk-j881ctwp.js";
+import {
+  LOG_LINE,
+  storeSignature
+} from "./chunk-w5dq0wfg.js";
+import {
+  adjacency,
+  graphData
+} from "./chunk-g81sfh45.js";
+import {
+  neighbors
+} from "./chunk-9q7vjba0.js";
+import {
   cacheRoot,
   embedderFor,
-  neighbors,
   search,
   semanticUnavailable,
   syncIndex
-} from "./chunk-j0bvdvaa.js";
+} from "./chunk-xg2qjjsk.js";
 import {
   LOG_FILE,
-  Store,
-  displayPath,
-  storeSignature
-} from "./chunk-4m0nbp6g.js";
+  RESERVED_FIELDS,
+  Store
+} from "./chunk-h52xt07b.js";
 
 // src/viewer/run.tsx
 import { spawnSync } from "node:child_process";
@@ -21,6 +42,76 @@ import { render } from "ink";
 // src/viewer/app.tsx
 import { Box, Text, useApp, useInput, useWindowSize } from "ink";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { spawn } from "node:child_process";
+
+// src/viewer/dreamForm.ts
+var DEFAULT_CAP = 5;
+var dreamFormMax = (f) => f.scope === "here" ? f.here : f.all;
+function newDreamForm(all, here) {
+  return { all, here, scope: all ? "all" : "here", cap: Math.min(DEFAULT_CAP, all), field: "cap", typed: "" };
+}
+function updateDreamForm(f, key) {
+  const clampCap = (cap, form = f) => Math.max(1, Math.min(dreamFormMax(form), cap));
+  if (/^\d$/.test(key)) {
+    const typed = `${f.typed}${key}`.replace(/^0+/, "");
+    return typed ? { ...f, field: "cap", typed, cap: clampCap(Number(typed)) } : f;
+  }
+  const next = { ...f, typed: "" };
+  if (key === "up" || key === "down")
+    return { ...next, field: f.field === "cap" ? "scope" : "cap" };
+  if (key === "all")
+    return { ...next, field: "cap", cap: dreamFormMax(f) };
+  if (f.field === "cap")
+    return { ...next, cap: clampCap(f.cap + (key === "right" ? 1 : -1)) };
+  const scope = f.scope === "all" ? "here" : "all";
+  if (!(scope === "here" ? f.here : f.all))
+    return next;
+  const moved = { ...next, scope };
+  return { ...moved, cap: clampCap(f.cap, moved) };
+}
+function dreamFormFlags(f) {
+  return [...f.scope === "here" ? ["--here"] : [], ...f.cap < dreamFormMax(f) ? ["--limit", String(f.cap)] : []];
+}
+function costPerSession(runs) {
+  const paid = runs.filter((r) => r.cost > 0 && r.sessions.some((s) => s.ok));
+  const sessions = paid.reduce((n, r) => n + r.sessions.filter((s) => s.ok).length, 0);
+  return sessions ? paid.reduce((n, r) => n + r.cost, 0) / sessions : undefined;
+}
+function dreamFormLines(f, info, width) {
+  const fill = (line) => {
+    let room = width;
+    const fitted = [];
+    for (const seg of line) {
+      const text = seg.text.slice(0, room);
+      room -= text.length;
+      if (text)
+        fitted.push({ ...seg, text });
+    }
+    return [...fitted, { text: " ".repeat(room) }];
+  };
+  const row = (field, label, value) => {
+    const on = f.field === field;
+    return [{ text: on ? " ▸ " : "   ", color: "cyan" }, { text: label.padEnd(10), dim: !on }, { text: ` ‹ ${value} › `, inverse: on, bold: on }];
+  };
+  const max = dreamFormMax(f);
+  const count = (n) => `${n} session${n === 1 ? "" : "s"}`;
+  const scope = f.scope === "here" ? `this directory (${f.here})` : `all directories (${f.all})`;
+  const capText = f.cap >= max ? `no cap, all ${max}` : `${f.cap} of ${max}`;
+  const blank = [];
+  return [
+    [{ text: " Run a dream", bold: true }],
+    blank,
+    row("scope", "Sessions", scope),
+    row("cap", "Cap", capText),
+    blank,
+    [{ text: ` Reads ${count(f.cap)}, oldest first.`, dim: true }],
+    [{ text: ` Model: ${info.model}`, dim: true }],
+    ...info.perSession === undefined ? [] : [[{ text: ` About $${(info.perSession * f.cap).toFixed(2)}, going by past dreams.`, dim: true }]],
+    [{ text: " Changes apply to memory without review.", color: "yellow" }],
+    blank,
+    [{ text: " ⏎ start  ↑↓ field  ←→ change  0-9 cap  a all  esc", dim: true }]
+  ].map(fill);
+}
 
 // src/viewer/model.ts
 import { readFileSync } from "node:fs";
@@ -192,6 +283,24 @@ function formatField(value) {
     return stringify(value).trim();
   return String(value);
 }
+var managedDate = (value) => value instanceof Date ? value.toISOString().slice(0, 10) : typeof value === "string" ? value : undefined;
+function daysAgo(date, now) {
+  const days = Math.round((new Date(now).setHours(0, 0, 0, 0) - new Date(`${date}T00:00:00`).getTime()) / 86400000);
+  return Number.isNaN(days) ? "" : days <= 0 ? " (today)" : days === 1 ? " (yesterday)" : ` (${days}d ago)`;
+}
+function managedLine(value, now = new Date) {
+  const block = value ?? {};
+  const created = managedDate(block.created);
+  const updated = managedDate(block.updated);
+  if (!created && !updated)
+    return;
+  const line = [{ text: " o6y ", inverse: true, bold: true, color: "magenta" }];
+  if (created)
+    line.push({ text: " created ", color: "magenta" }, { text: created, bold: true });
+  if (updated)
+    line.push({ text: " updated ", color: "magenta" }, { text: updated, bold: true }, { text: daysAgo(updated, now), dim: true });
+  return line;
+}
 function renderPage(store, id, width, changed) {
   const obj = store.objects.get(id);
   const lines = [];
@@ -201,7 +310,7 @@ function renderPage(store, id, width, changed) {
     lines.push([{ text: "Wanted page: linked but not written yet.", dim: true }]);
   } else {
     const type = store.types.get(obj.type);
-    const tags = [{ text: ` ${obj.layer.name}`, dim: true }];
+    const tags = [];
     if (obj.pinned)
       tags.push({ text: " pinned", color: "yellow" });
     if (changed?.has(id))
@@ -210,7 +319,10 @@ function renderPage(store, id, width, changed) {
     for (const w of wrap(obj.summary || "(no summary)", width))
       lines.push([{ text: w, italic: true }]);
     lines.push([{ text: displayPath(obj.path), dim: true }]);
-    const fields = Object.entries(obj.data).filter(([k]) => k !== "summary" && k !== "pinned");
+    const managed = managedLine(obj.data.o6y);
+    if (managed)
+      lines.push(managed);
+    const fields = Object.entries(obj.data).filter(([k]) => !RESERVED_FIELDS.includes(k));
     if (fields.length) {
       lines.push([]);
       const keyWidth = Math.min(16, Math.max(...fields.map(([k]) => k.length)));
@@ -271,7 +383,7 @@ function renderTypePage(store, typeName, width) {
   if (!type)
     return { lines: [[{ text: `no type ${typeName}`, color: "red" }]], links, linkLines };
   const objects = store.objectsOfType(typeName);
-  lines.push([{ text: typeName, bold: true, color: "magenta" }, { text: ` ${type.layer.name} · ${objects.length} objects`, dim: true }]);
+  lines.push([{ text: typeName, bold: true, color: "magenta" }, { text: ` ${objects.length} objects`, dim: true }]);
   for (const w of wrap(type.schema.description, width))
     lines.push([{ text: w, italic: true }]);
   lines.push([{ text: displayPath(type.path), dim: true }]);
@@ -311,7 +423,6 @@ function renderWantedPage(store, width) {
   }
   return { lines, links, linkLines };
 }
-var LOG_LINE = /^- (\S+) (create|update|delete) (.+) \((.+)\)$/;
 function parseLog(text, layer) {
   const out = [];
   for (const line of text.split(`
@@ -319,7 +430,7 @@ function parseLog(text, layer) {
     const m = LOG_LINE.exec(line);
     const at = m ? Date.parse(m[1]) : NaN;
     if (m && !Number.isNaN(at))
-      out.push({ at, action: m[2], target: m[3], via: m[4], layer });
+      out.push({ at, action: m[2], target: m[3], via: m[4], layer, source: m[5] });
   }
   return out;
 }
@@ -460,7 +571,7 @@ function renderActivityPage(store, row, width, changed) {
   const stamp = (at) => new Date(at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "medium" });
   const describeEntry = (e) => {
     const a = ACTION_MARK[e.action];
-    return [{ text: `${a.mark} ${a.verb}`, color: a.color }, { text: ` ${stamp(e.at)} · ${e.via} · ${e.layer}`, dim: true }];
+    return [{ text: `${a.mark} ${a.verb}`, color: a.color }, { text: ` ${stamp(e.at)} · ${e.via}${e.source ? ` · ${e.source}` : ""}`, dim: true }];
   };
   if (row.kind === "entry") {
     const { object, type } = activityTarget(store, row);
@@ -499,6 +610,76 @@ function renderActivityPage(store, row, width, changed) {
   }
   return { lines, links, linkLines };
 }
+var DREAM_COLOR = { running: "cyan", done: "green", partial: "yellow", aborted: "yellow", failed: "red" };
+var dreamWhen = (run) => new Date(run.startedAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
+function dreamLine(run, width, selected) {
+  const left = `${dreamWhen(run)} `;
+  const done = run.sessions.filter((s) => s.ok || s.summary).length;
+  const right = run.status === "running" ? ` dreaming ${done}/${run.planned ?? "?"}` : ` ${run.status} · ${run.changes.length}Δ`;
+  return [
+    { text: truncate(left, width), color: selected ? "cyan" : undefined, bold: selected, inverse: selected },
+    { text: truncate(right.padStart(Math.max(0, width - left.length)), Math.max(0, width - left.length)), color: DREAM_COLOR[run.status], dim: !selected }
+  ];
+}
+function renderDreamPage(store, run, width) {
+  const links = [];
+  const linkLines = [];
+  const lines = [];
+  const wrapped = (text, indent = "  ") => lines.push(...wrap(text.trim().replace(/\s+/g, " "), Math.max(10, width - indent.length)).map((t) => [{ text: indent + t, dim: true }]));
+  const heading = (text) => lines.push([], [{ text, bold: true, color: "magenta" }]);
+  const ok = run.sessions.filter((s) => s.ok).length;
+  lines.push([{ text: dreamWhen(run), bold: true }, { text: ` ${run.status}`, color: DREAM_COLOR[run.status], bold: true }]);
+  if (run.status === "running")
+    lines.push([{ text: `now: ${run.step ?? "starting"}`, color: "cyan" }]);
+  lines.push([{ text: `${ok}/${run.planned ?? run.sessions.length} sessions · ${run.changes.length} changes · $${run.cost.toFixed(4)} · ${run.tokens} tokens`, dim: true }]);
+  const model = run.models.analyzer === run.models.organizer ? run.models.analyzer || "session model" : `${run.models.analyzer || "session model"} / ${run.models.organizer || "session model"}`;
+  lines.push([{ text: truncate(model, width), dim: true }]);
+  if (run.error) {
+    heading("Not applied");
+    wrapped(run.error);
+  }
+  heading("Changes");
+  if (!run.changes.length)
+    lines.push([{ text: run.status === "running" ? "  applied when the dream finishes" : "  none", dim: true }]);
+  for (const c of run.changes) {
+    const id = c.path.split("/").slice(-2).join("/").replace(/\.md$/, "");
+    const exists = store.objects.has(id);
+    if (exists) {
+      links.push(id);
+      linkLines.push(lines.length);
+    }
+    const mark = ACTION_MARK[c.action];
+    const summary = store.objects.get(id)?.summary;
+    lines.push([
+      { text: `  ${mark?.mark ?? "?"} `, color: mark?.color },
+      { text: id, color: exists ? "cyan" : "red" },
+      { text: truncate(summary ? ` — ${summary}` : "", Math.max(0, width - id.length - 4)), dim: true }
+    ]);
+  }
+  if (run.conflicts.length) {
+    heading("Kept the live version (edited during the dream)");
+    for (const path of run.conflicts)
+      lines.push([{ text: `  ${truncate(path.split("/").slice(-2).join("/"), width - 2)}`, color: "yellow" }]);
+  }
+  heading("Sessions");
+  for (const s of run.sessions) {
+    const working = run.status === "running" && !s.ok && !s.summary;
+    lines.push([{ text: working ? "  ⋯ " : s.ok ? "  ✓ " : "  ✗ ", color: working ? "cyan" : s.ok ? "green" : "red" }, { text: truncate(s.cwd, Math.max(4, width - 4)) }]);
+    lines.push([{ text: `    ${truncate(s.id, Math.max(4, width - 4))}`, dim: true }]);
+    if (s.summary)
+      wrapped(s.summary, "    ");
+  }
+  if (run.organizer) {
+    heading(run.organizer.ok ? "Organizer" : run.status === "running" ? "Organizer (working)" : "Organizer failed");
+    if (run.organizer.summary)
+      wrapped(run.organizer.summary);
+  }
+  if (run.snapshot) {
+    heading("Store before this dream");
+    wrapped(run.snapshot);
+  }
+  return { lines, links, linkLines };
+}
 function searchLine(store, hit, width, selected, threshold) {
   const score = `${hit.score.toFixed(2)} `;
   const below = hit.score < threshold;
@@ -506,6 +687,155 @@ function searchLine(store, hit, width, selected, threshold) {
     { text: score, color: below ? "gray" : "green" },
     { text: truncate(hit.id, Math.max(4, width - score.length)), color: selected ? "cyan" : undefined, bold: selected, inverse: selected, dim: below && !selected }
   ];
+}
+
+// src/viewer/graph.ts
+var COLORS = ["cyan", "green", "yellow", "magenta", "blue", "red"];
+var LIST_MAX = 80;
+function busiest(adj) {
+  let best;
+  for (const [id, near] of adj)
+    if (!best || near.size > adj.get(best).size || near.size === adj.get(best).size && id < best)
+      best = id;
+  return best;
+}
+function localGraph(adj, center, depth) {
+  if (!adj.has(center))
+    return [];
+  const out = [{ id: center, hop: 0 }];
+  const seen = new Set([center]);
+  let edge = [center];
+  for (let hop = 1;hop <= depth && out.length < LIST_MAX; hop++) {
+    const next = [];
+    for (const from of edge) {
+      const near = [...adj.get(from) ?? []].filter((id) => !seen.has(id)).sort((a, b) => adj.get(b).size - adj.get(a).size || a.localeCompare(b));
+      for (const id of near) {
+        if (out.length >= LIST_MAX)
+          break;
+        seen.add(id);
+        out.push({ id, hop, parent: from });
+        next.push(id);
+      }
+    }
+    edge = next;
+  }
+  return out;
+}
+var typeColor = (store) => {
+  const types = [...store.types.keys()].sort();
+  return (id) => store.objects.has(id) ? COLORS[types.indexOf(id.split("/")[0]) % COLORS.length] : "red";
+};
+function graphLine(store, node, adj, width, selected) {
+  const color = typeColor(store)(node.id);
+  const lead = node.hop === 0 ? "◉ " : `${"  ".repeat(node.hop - 1)}· `;
+  const count = ` ${adj.get(node.id)?.size ?? 0}`;
+  const name = truncate(node.id, Math.max(4, width - lead.length - count.length));
+  return [
+    { text: lead, color },
+    { text: name, bold: selected || node.hop === 0, inverse: selected, color: selected ? "cyan" : undefined },
+    { text: count.padStart(width - lead.length - name.length), dim: true }
+  ];
+}
+function renderLocalGraph(store, nodes, adj, selected, width, height) {
+  const rows = Math.max(3, height - 1);
+  const grid = Array.from({ length: rows }, () => Array(width).fill(undefined));
+  const color = typeColor(store);
+  const room = Math.max(4, Math.floor(rows * 0.8));
+  const picked = selected && nodes.findIndex((n) => n.id === selected) >= room ? [...nodes.slice(0, room - 1), nodes.find((n) => n.id === selected)] : nodes.slice(0, room);
+  const depth = Math.max(...picked.map((n) => n.hop), 1);
+  const rings = depth === 1 ? [0, 0.4] : [0, 0.24, 0.38, 0.47];
+  const cx = (width - 1) / 2;
+  const cy = (rows - 1) / 2;
+  const angle = new Map;
+  const place = new Map;
+  const put = (id, a, ring) => {
+    angle.set(id, a);
+    place.set(id, { x: Math.round(cx + Math.cos(a) * ring * (width - 2)), y: Math.round(cy + Math.sin(a) * ring * (rows - 1)) });
+  };
+  put(picked[0].id, 0, 0);
+  const first = picked.filter((n) => n.hop === 1);
+  first.forEach((n, i) => put(n.id, i / first.length * Math.PI * 2 - Math.PI / 2, rings[1]));
+  for (const hop of [2, 3]) {
+    const level = picked.filter((n) => n.hop === hop);
+    const groups = new Map;
+    for (const n of level)
+      groups.set(n.parent, [...groups.get(n.parent) ?? [], n]);
+    for (const [parent, kids] of groups) {
+      const spread = Math.min(0.45, Math.PI * 2 / Math.max(1, first.length) / Math.max(1, kids.length));
+      kids.forEach((n, k) => put(n.id, (angle.get(parent) ?? 0) + spread * (k - (kids.length - 1) / 2), rings[hop]));
+    }
+  }
+  const drawn = new Set(place.keys());
+  const line = (a, b, on) => {
+    const steps = Math.max(Math.abs(b.x - a.x), Math.abs(b.y - a.y), 1);
+    for (let i = 1;i < steps; i++) {
+      const x = Math.round(a.x + (b.x - a.x) * i / steps);
+      const y = Math.round(a.y + (b.y - a.y) * i / steps);
+      const cell = grid[y]?.[x];
+      if (y < 0 || y >= rows || x < 0 || x >= width || cell && !on)
+        continue;
+      grid[y][x] = { ch: on ? "•" : "·", style: on ? { color: "cyan" } : { dim: true }, label: false };
+    }
+  };
+  for (const id of drawn)
+    for (const other of adj.get(id) ?? [])
+      if (drawn.has(other) && id < other && id !== selected && other !== selected)
+        line(place.get(id), place.get(other), false);
+  if (selected && drawn.has(selected)) {
+    for (const other of adj.get(selected) ?? [])
+      if (drawn.has(other))
+        line(place.get(selected), place.get(other), true);
+  }
+  const fits = (x, y, len) => {
+    if (y < 0 || y >= rows || x < 0 || x + len > width)
+      return false;
+    for (let i = Math.max(0, x - 1);i < Math.min(width, x + len + 1); i++)
+      if (grid[y][i]?.label)
+        return false;
+    return true;
+  };
+  const label = (id, center, isSelected) => {
+    const p = place.get(id);
+    const text = truncate(center ? id : id.slice(id.indexOf("/") + 1), center ? 34 : 20);
+    const style = isSelected ? { inverse: true, bold: true, color: "cyan" } : center ? { bold: true, color: color(id) } : { color: color(id) };
+    const decorated = isSelected || center ? ` ${text} ` : text;
+    for (const dy of [0, -1, 1, -2, 2]) {
+      for (const dx of [0, -6, 6, -12, 12]) {
+        const x = Math.min(width - decorated.length, Math.max(0, p.x + dx - Math.floor(decorated.length / 2)));
+        if (!fits(x, p.y + dy, decorated.length))
+          continue;
+        [...decorated].forEach((ch, i) => grid[p.y + dy][x + i] = { ch, style, label: true });
+        return;
+      }
+    }
+    if (p.y >= 0 && p.y < rows && p.x >= 0 && p.x < width && !grid[p.y][p.x]?.label)
+      grid[p.y][p.x] = { ch: "●", style, label: true };
+  };
+  label(picked[0].id, true, picked[0].id === selected);
+  if (selected && selected !== picked[0].id && drawn.has(selected))
+    label(selected, false, true);
+  for (const n of picked.slice(1))
+    if (n.id !== selected)
+      label(n.id, false, false);
+  const lines = grid.map((row) => {
+    const segs = [];
+    let current;
+    let key = "";
+    for (const cell of row) {
+      const k = JSON.stringify(cell?.style ?? null);
+      if (!current || k !== key) {
+        current = { text: "", ...cell?.style ?? {} };
+        key = k;
+        segs.push(current);
+      }
+      current.text += cell?.ch ?? " ";
+    }
+    return segs;
+  });
+  const hidden = nodes.length - picked.length;
+  const note = `${nodes.length - 1} linked${hidden > 0 ? ` · ${hidden} only in the list` : ""}`;
+  lines.push([{ text: truncate(note, width), dim: true }]);
+  return lines;
 }
 
 // src/viewer/watch.ts
@@ -616,7 +946,7 @@ function App({ layers, initial, onEdit }) {
   const bodyHeight = Math.max(3, rows - 2);
   const innerHeight = bodyHeight - 2;
   const narrow = columns < 80;
-  const leftWidth = narrow ? columns - 2 : view === "activity" ? clamp(Math.floor(columns * 0.4), 30, 56) : clamp(Math.floor(columns * 0.3), 24, 44);
+  const leftWidth = narrow ? columns - 2 : view === "activity" || view === "dreams" || view === "graph" ? clamp(Math.floor(columns * 0.4), 30, 56) : clamp(Math.floor(columns * 0.3), 24, 44);
   const rightWidth = narrow ? Math.max(10, columns - 4) : Math.max(10, columns - leftWidth - 6);
   const tree = useMemo(() => treeRows(store, filter, open), [store, filter, open]);
   const keys = useMemo(() => tree.map(rowKey), [tree]);
@@ -647,16 +977,63 @@ function App({ layers, initial, onEdit }) {
   const activity = useMemo(() => readActivity(layers), [layers, loadedAt]);
   const actRows = useMemo(() => activityRows(activity, activityOpen), [activity, activityOpen]);
   const hits = results?.hits ?? [];
-  const sideKeys = useMemo(() => view === "activity" ? actRows.map((r) => r.key) : view === "search" ? hits.map((h) => h.key) : [], [view, actRows, hits]);
+  const adj = useMemo(() => adjacency(graphData(store)), [store]);
+  const [graphCenter, setGraphCenter] = useState(initial.graphCenter);
+  const [graphBack, setGraphBack] = useState([]);
+  const [graphDepth, setGraphDepth] = useState(1);
+  const center = graphCenter && adj.has(graphCenter) ? graphCenter : busiest(adj);
+  const graphNodes = useMemo(() => view === "graph" && center ? localGraph(adj, center, graphDepth) : [], [view, adj, center, graphDepth]);
+  const [dreamAsk, setDreamAsk] = useState();
+  const [dreamNote, setDreamNote] = useState();
+  const [dreamLive, setDreamLive] = useState(false);
+  const [dreamTick, setDreamTick] = useState(0);
+  const dreamWasRunning = useRef(false);
+  useEffect(() => {
+    if (view !== "dreams")
+      return;
+    const timer = setInterval(() => {
+      const running = dreamRunning(dreamsDir(process.env));
+      if (running || dreamWasRunning.current)
+        setDreamTick((n) => n + 1);
+      dreamWasRunning.current = running;
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [view]);
+  const startDream = (flags) => {
+    setDreamAsk(undefined);
+    setSideKey(undefined);
+    setDreamNote(undefined);
+    setDreamLive(true);
+    const { args, env } = dreamInvocation(layers[0].root, flags, process.env);
+    const child = spawn("pi", args, { env, stdio: "ignore", detached: true });
+    child.unref();
+    child.on("error", (err) => {
+      setDreamLive(false);
+      setDreamNote(`could not start pi: ${err.message}`);
+    });
+    child.on("close", (code) => {
+      setDreamLive(false);
+      if (code)
+        setDreamNote(`pi exited with code ${code}`);
+      reload();
+    });
+  };
+  const dreams = useMemo(() => view === "dreams" ? readRuns(process.env) : [], [view, loadedAt, dreamTick]);
+  const sideKeys = useMemo(() => view === "activity" ? actRows.map((r) => r.key) : view === "dreams" ? dreams.map((d) => d.id) : view === "graph" ? graphNodes.map((n) => n.id) : view === "search" ? hits.map((h) => h.key) : [], [view, actRows, dreams, graphNodes, hits]);
   const sideIndex = sideKey && sideKeys.includes(sideKey) ? sideKeys.indexOf(sideKey) : sideKeys.length ? 0 : -1;
   const sideSelected = sideIndex >= 0 ? sideKeys[sideIndex] : undefined;
   const actRow = view === "activity" ? actRows.find((r) => r.key === sideSelected) : undefined;
   const hit = view === "search" ? hits.find((h) => h.key === sideSelected) : undefined;
-  const pageObject = view === "browse" ? id : view === "activity" ? actRow ? activityTarget(store, actRow).object : undefined : hit?.id;
+  const dream = view === "dreams" ? dreams.find((d) => d.id === sideSelected) : undefined;
+  const pageObject = view === "browse" ? id : view === "activity" ? actRow ? activityTarget(store, actRow).object : undefined : view === "graph" ? sideSelected && store.objects.has(sideSelected) ? sideSelected : undefined : hit?.id;
   const threshold = store.semantic.threshold;
   const page = useMemo(() => {
     if (view === "activity")
       return actRow ? renderActivityPage(store, actRow, rightWidth, changedIds) : undefined;
+    if (view === "graph")
+      return { lines: renderLocalGraph(store, graphNodes, adj, sideSelected, rightWidth, innerHeight), links: [], linkLines: [] };
+    if (view === "dreams")
+      return dream ? renderDreamPage(store, dream, rightWidth) : undefined;
     if (view === "search")
       return hit && store.objects.has(hit.id) ? renderPage(store, hit.id, rightWidth, changedIds) : undefined;
     if (!selectedKey)
@@ -666,7 +1043,7 @@ function App({ layers, initial, onEdit }) {
     if (selectedKey === WANTED_KEY)
       return renderWantedPage(store, rightWidth);
     return renderPage(store, selectedKey, rightWidth, changedIds);
-  }, [store, view, actRow, hit, selectedKey, rightWidth, changedIds]);
+  }, [store, view, actRow, dream, hit, selectedKey, rightWidth, changedIds, graphNodes, adj, sideSelected, innerHeight]);
   const go = (target, push = true) => {
     if (target === selectedKey)
       return;
@@ -756,7 +1133,7 @@ function App({ layers, initial, onEdit }) {
     const obj = pageObject ? store.objects.get(pageObject) : undefined;
     if (!obj)
       return;
-    onEdit(obj.path, { current, view, history, filter, open: [...open], sideKey: sideSelected, activityOpen: [...activityOpen], results });
+    onEdit(obj.path, { current, view, history, filter, open: [...open], sideKey: sideSelected, activityOpen: [...activityOpen], results, graphCenter: center });
     exit();
   };
   useInput((input, key) => {
@@ -789,6 +1166,23 @@ function App({ layers, initial, onEdit }) {
         setFilter((f) => f + input);
       return;
     }
+    if (dreamAsk) {
+      if (key.escape || input === "q")
+        setDreamAsk(undefined);
+      else if (key.return)
+        startDream(dreamFormFlags(dreamAsk));
+      else if (key.upArrow || key.downArrow || key.tab || input === "j" || input === "k")
+        setDreamAsk(updateDreamForm(dreamAsk, key.upArrow || input === "k" ? "up" : "down"));
+      else if (key.leftArrow || input === "h")
+        setDreamAsk(updateDreamForm(dreamAsk, "left"));
+      else if (key.rightArrow || input === "l")
+        setDreamAsk(updateDreamForm(dreamAsk, "right"));
+      else if (input === "a")
+        setDreamAsk(updateDreamForm(dreamAsk, "all"));
+      else if (/^\d+$/.test(input))
+        setDreamAsk([...input].reduce((f, d) => updateDreamForm(f, d), dreamAsk));
+      return;
+    }
     if (input.length > 1 && !key.ctrl && !key.meta) {
       if (input.startsWith("/")) {
         setSearching(true);
@@ -807,6 +1201,14 @@ function App({ layers, initial, onEdit }) {
         return view === "browse" ? moveList(delta) : moveSide(delta);
       }
       input = input[input.length - 1];
+    }
+    if (input === "R" && view === "dreams") {
+      if (dreamLive || dreamRunning(dreamsDir(process.env)))
+        return setDreamNote("a dream is already running");
+      const { unprocessed, here } = dreamStatus(process.cwd(), process.env);
+      if (!unprocessed)
+        return setDreamNote("no sessions are waiting");
+      return setDreamAsk(newDreamForm(unprocessed, here));
     }
     if (input === "q")
       return exit();
@@ -833,12 +1235,29 @@ function App({ layers, initial, onEdit }) {
       return switchTo("browse");
     if (input === "2" || input === "a")
       return switchTo("activity");
-    if (input === "3" && results)
+    if (input === "3" || input === "d")
+      return switchTo("dreams");
+    if (input === "4" && view !== "graph") {
+      if (pageObject ?? id)
+        setGraphCenter(pageObject ?? id);
+      setSideKey(undefined);
+      return switchTo("graph");
+    }
+    if (input === "5" && results)
       return switchTo("search");
     if (input === "e")
       return edit();
     if (input === "r")
       return reload();
+    if ((input === "b" || key.backspace || key.delete) && view === "graph") {
+      const prev = graphBack[graphBack.length - 1];
+      if (prev) {
+        setGraphBack((h) => h.slice(0, -1));
+        setGraphCenter(prev);
+        setSideKey(undefined);
+      }
+      return;
+    }
     if (input === "b" || key.backspace || key.delete)
       return back();
     if (input === "o" && pageObject && view !== "browse")
@@ -902,6 +1321,20 @@ function App({ layers, initial, onEdit }) {
           moveSide(target - sideIndex);
         return;
       }
+    }
+    if (view === "graph" && focus === "list") {
+      if (key.return || key.rightArrow || input === "l") {
+        if (sideSelected && center && sideSelected !== center) {
+          setGraphBack((h) => [...h.slice(-49), center]);
+          setGraphCenter(sideSelected);
+          setSideKey(undefined);
+        }
+        return;
+      }
+      if (input === "+" || input === "=")
+        return setGraphDepth((d) => Math.min(3, d + 1));
+      if (input === "-")
+        return setGraphDepth((d) => Math.max(1, d - 1));
     }
     if (view !== "browse" && focus === "list") {
       if (key.downArrow || input === "j")
@@ -989,7 +1422,7 @@ function App({ layers, initial, onEdit }) {
   });
   const errors = store.errors().length;
   const warnings = store.issues.filter((i) => i.severity === "warning").length;
-  const stores = layers.map((l) => `${l.name} ${displayPath(l.root)}`).join("  ");
+  const stores = displayPath(layers[0].root);
   const time = loadedAt.toLocaleTimeString([], { hour12: false });
   const header = /* @__PURE__ */ jsxs(Box, {
     width: columns,
@@ -1020,10 +1453,20 @@ function App({ layers, initial, onEdit }) {
               bold: view === "activity",
               children: narrow ? " 2 " : " 2 activity "
             }),
+            /* @__PURE__ */ jsx(Text, {
+              inverse: view === "dreams",
+              bold: view === "dreams",
+              children: narrow ? " 3 " : " 3 dreams "
+            }),
+            /* @__PURE__ */ jsx(Text, {
+              inverse: view === "graph",
+              bold: view === "graph",
+              children: narrow ? " 4 " : " 4 graph "
+            }),
             results ? /* @__PURE__ */ jsx(Text, {
               inverse: view === "search",
               bold: view === "search",
-              children: narrow ? " 3 " : " 3 search "
+              children: narrow ? " 5 " : " 5 search "
             }) : null,
             narrow ? null : /* @__PURE__ */ jsxs(Text, {
               dimColor: true,
@@ -1126,7 +1569,7 @@ function App({ layers, initial, onEdit }) {
       })
     ]
   });
-  const footerText = searching ? null : narrow ? view === "browse" ? focus === "list" ? "↑↓ g/G · ⏎→ open · ← close · x/X all · [ ] · 2 activity · / ?" : "↑↓␣ g/G scroll · n/N link · ⏎ go · ← list · e" : focus === "list" ? view === "activity" ? "↑↓ g/G · ⏎→ open · ← close · x/X all · [ ] · o · 1 · ?" : "↑↓ g/G · ⏎→ page · o open · 1 browse · ?" : "↑↓␣ g/G scroll · n/N link · ⏎ go · ← list · o · e" : view === "browse" ? focus === "list" ? "↑↓ move  g/G top/bottom  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next type  tab page  2 activity  / filter  ? search  b back  e edit  q" : "↑↓/j/k/space scroll  g/G top/bottom  n/N next/prev link  enter follow  ←/esc list  2 activity  ? search  b back  e edit  q quit" : focus === "list" ? view === "activity" ? "↑↓ move  g/G top/bottom  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next day  o open in browse  tab page  1 browse  ? search  e edit  q" : "↑↓ move  g/G top/bottom  ⏎/→ page  o open in browse  tab page  1 browse  2 activity  ? search  e edit  q" : "↑↓/j/k/space scroll  g/G top/bottom  n/N next/prev link  enter follow  ←/esc list  o open in browse  e edit  q quit";
+  const footerText = searching ? null : view === "dreams" ? "↑↓ move  ⏎/→ page  R run a dream  1 browse  2 activity  4 graph  ? search  q" : view === "graph" ? `↑↓ move  ⏎/→ center  b back  +/- depth (${graphDepth})  o open in browse  e edit  1 browse  ? search  q` : narrow ? view === "browse" ? focus === "list" ? "↑↓ g/G · ⏎→ open · ← close · x/X all · [ ] · 2 activity · / ?" : "↑↓␣ g/G scroll · n/N link · ⏎ go · ← list · e" : focus === "list" ? view === "activity" ? "↑↓ g/G · ⏎→ open · ← close · x/X all · [ ] · o · 1 · ?" : "↑↓ g/G · ⏎→ page · o open · 1 browse · ?" : "↑↓␣ g/G scroll · n/N link · ⏎ go · ← list · o · e" : view === "browse" ? focus === "list" ? "↑↓ move  g/G top/bottom  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next type  tab page  2 activity  3 dreams  / filter  ? search  b back  e edit  q" : "↑↓/j/k/space scroll  g/G top/bottom  n/N next/prev link  enter follow  ←/esc list  2 activity  ? search  b back  e edit  q quit" : focus === "list" ? view === "activity" ? "↑↓ move  g/G top/bottom  ⏎/→ open  ← close  x/X collapse/expand all  [ ] prev/next day  o open in browse  tab page  1 browse  ? search  e edit  q" : "↑↓ move  g/G top/bottom  ⏎/→ page  o open in browse  tab page  1 browse  2 activity  ? search  e edit  q" : "↑↓/j/k/space scroll  g/G top/bottom  n/N next/prev link  enter follow  ←/esc list  o open in browse  e edit  q quit";
   const footer = asking ? /* @__PURE__ */ jsxs(Text, {
     wrap: "truncate",
     children: [
@@ -1208,6 +1651,21 @@ function App({ layers, initial, onEdit }) {
       selectedLine = Math.max(0, actRows.findIndex((r) => r.key === sideSelected));
       if (!actRows.length)
         lines = [{ key: "empty", line: [{ text: " no activity logged yet", dim: true }] }];
+    } else if (view === "dreams") {
+      lines = dreams.map((d) => ({ key: d.id, line: dreamLine(d, w, selectedOnList && d.id === sideSelected) }));
+      selectedLine = Math.max(0, dreams.findIndex((d) => d.id === sideSelected));
+      const note = dreams[0]?.status === "running" ? undefined : dreamLive || dreamRunning(dreamsDir(process.env)) ? " dreaming…" : dreamNote;
+      if (note) {
+        lines.unshift({ key: "note", line: [{ text: truncate(note, w), color: "yellow" }] });
+        selectedLine += 1;
+      }
+      if (!dreams.length && !note)
+        lines = [{ key: "empty", line: [{ text: " no dreams yet; run /o6y-dream in pi", dim: true }] }];
+    } else if (view === "graph") {
+      lines = graphNodes.map((n) => ({ key: n.id, line: graphLine(store, n, adj, w, selectedOnList && n.id === sideSelected) }));
+      selectedLine = Math.max(0, graphNodes.findIndex((n) => n.id === sideSelected));
+      if (!graphNodes.length)
+        lines = [{ key: "empty", line: [{ text: " nothing to graph yet", dim: true }] }];
     } else {
       const head = [{ text: truncate(`? ${results?.query ?? ""}`, w), color: "cyan", bold: true }];
       lines = [{ key: "query", line: head }];
@@ -1233,6 +1691,9 @@ function App({ layers, initial, onEdit }) {
       });
     }
     const start = clamp(selectedLine - Math.floor(innerHeight / 2), 0, Math.max(0, lines.length - innerHeight));
+    const dialogWidth = Math.min(58, columns - 2);
+    const models = [...new Set([store.dream.analyzerModel || store.dream.model, store.dream.organizerModel || store.dream.model])].map((m) => m || "pi's default").join(", ");
+    const dialog = dreamAsk ? dreamFormLines(dreamAsk, { model: models, perSession: costPerSession(dreams) }, dialogWidth - 2) : [];
     return /* @__PURE__ */ jsxs(Box, {
       flexDirection: "column",
       width: columns,
@@ -1256,13 +1717,24 @@ function App({ layers, initial, onEdit }) {
             pagePane
           ]
         }),
-        footer
+        footer,
+        dreamAsk ? /* @__PURE__ */ jsx(Box, {
+          position: "absolute",
+          top: Math.max(0, Math.floor((rows - dialog.length - 2) / 2)),
+          left: Math.floor((columns - dialogWidth) / 2),
+          width: dialogWidth,
+          flexDirection: "column",
+          borderStyle: "round",
+          borderColor: "yellow",
+          children: dialog.map((line, i) => /* @__PURE__ */ jsx(LineView, {
+            line
+          }, i))
+        }) : null
       ]
     });
   }
   const listStart = clamp(cursor - Math.floor(innerHeight / 2), 0, Math.max(0, tree.length - innerHeight));
   const visibleRows = tree.slice(listStart, listStart + innerHeight);
-  const multiLayer = layers.length > 1;
   return /* @__PURE__ */ jsxs(Box, {
     flexDirection: "column",
     width: columns,
@@ -1290,9 +1762,8 @@ function App({ layers, initial, onEdit }) {
                 const isCursor = index === cursor;
                 if (row2.kind === "type" || row2.kind === "wanted-header") {
                   const name2 = row2.kind === "type" ? row2.name : "wanted";
-                  const extra = row2.kind === "type" && multiLayer && row2.layer === "project" ? " project" : "";
                   const label2 = `${row2.open ? "▾" : "▸"} ${name2}`;
-                  const count2 = ` ${row2.count}${extra}`;
+                  const count2 = ` ${row2.count}`;
                   return /* @__PURE__ */ jsxs(Text, {
                     wrap: "truncate",
                     children: [

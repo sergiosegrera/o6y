@@ -111,7 +111,7 @@ async function runPi(prompt: string, cwd: string, globalRoot: string): Promise<R
     const started = performance.now();
     const proc = Bun.spawn(cmd, {
       cwd,
-      env: { ...process.env, O6Y_HOME: globalRoot, O6Y_PROJECT: join(cwd, ".agents", "o6y") },
+      env: { ...process.env, O6Y_HOME: globalRoot },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -132,10 +132,9 @@ async function runTrial(c: EvalCase, trial: number): Promise<Trial> {
   if (c.fixture) {
     const fixture = join(import.meta.dir, "fixtures", c.fixture);
     if (existsSync(join(fixture, "global"))) cpSync(join(fixture, "global"), globalRoot, { recursive: true });
-    if (existsSync(join(fixture, "project"))) cpSync(join(fixture, "project"), join(cwd, ".agents", "o6y"), { recursive: true });
   }
   for (const [rel, content] of Object.entries(c.files ?? {})) {
-    const path = rel.startsWith("project/") ? join(cwd, ".agents", "o6y", rel.slice(8)) : join(globalRoot, rel.replace(/^global\//, ""));
+    const path = join(globalRoot, rel.replace(/^global\//, ""));
     mkdirSync(dirname(path), { recursive: true });
     writeFileSync(path, content);
   }
@@ -151,7 +150,7 @@ async function runTrial(c: EvalCase, trial: number): Promise<Trial> {
   const checks: CheckResult[] = c.checks.map((check) => {
     if (failed) return { label: check.label, pass: false, detail: `run failed: ${failed}` };
     try {
-      const result = check.test({ store, runs, roots: { global: globalRoot, project: join(cwd, ".agents", "o6y") } });
+      const result = check.test({ store, runs, roots: { global: globalRoot } });
       return result === true ? { label: check.label, pass: true } : { label: check.label, pass: false, detail: String(result) };
     } catch (err) {
       return { label: check.label, pass: false, detail: `check threw: ${err}` };

@@ -7,6 +7,9 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { stringify } from "yaml";
 import { type Edge, neighbors } from "../core/ops.ts";
+import { LOG_LINE } from "../core/fsops.ts";
+import type { DreamRun } from "../dream/status.ts";
+import { RESERVED_FIELDS } from "../core/schema.ts";
 import { type Layer, LOG_FILE, type ObjectEntry, type Store } from "../core/store.ts";
 
 export { type Edge, neighbors };
@@ -207,6 +210,25 @@ export interface Page {
 }
 
 /** The page for an object or wanted page: header, fields, body, links and backlinks. */
+const managedDate = (value: unknown) => (value instanceof Date ? value.toISOString().slice(0, 10) : typeof value === "string" ? value : undefined);
+
+function daysAgo(date: string, now: Date): string {
+  const days = Math.round((new Date(now).setHours(0, 0, 0, 0) - new Date(`${date}T00:00:00`).getTime()) / 86_400_000);
+  return Number.isNaN(days) ? "" : days <= 0 ? " (today)" : days === 1 ? " (yesterday)" : ` (${days}d ago)`;
+}
+
+/** The attributes o6y maintains itself, marked so they read differently from what was written. */
+export function managedLine(value: unknown, now = new Date()): Line | undefined {
+  const block = (value ?? {}) as Record<string, unknown>;
+  const created = managedDate(block.created);
+  const updated = managedDate(block.updated);
+  if (!created && !updated) return undefined;
+  const line: Line = [{ text: " o6y ", inverse: true, bold: true, color: "magenta" }];
+  if (created) line.push({ text: " created ", color: "magenta" }, { text: created, bold: true });
+  if (updated) line.push({ text: " updated ", color: "magenta" }, { text: updated, bold: true }, { text: daysAgo(updated, now), dim: true });
+  return line;
+}
+
 export function renderPage(store: Store, id: string, width: number, changed?: Set<string>): Page {
   const obj = store.objects.get(id);
   const lines: Line[] = [];
@@ -216,13 +238,15 @@ export function renderPage(store: Store, id: string, width: number, changed?: Se
     lines.push([{ text: "Wanted page: linked but not written yet.", dim: true }]);
   } else {
     const type = store.types.get(obj.type);
-    const tags: Seg[] = [{ text: ` ${obj.layer.name}`, dim: true }];
+    const tags: Seg[] = [];
     if (obj.pinned) tags.push({ text: " pinned", color: "yellow" });
     if (changed?.has(id)) tags.push({ text: " changed", color: "green" });
     lines.push([{ text: id, bold: true, color: "cyan" }, ...tags]);
     for (const w of wrap(obj.summary || "(no summary)", width)) lines.push([{ text: w, italic: true }]);
     lines.push([{ text: displayPath(obj.path), dim: true }]);
-    const fields = Object.entries(obj.data).filter(([k]) => k !== "summary" && k !== "pinned");
+    const managed = managedLine(obj.data.o6y);
+    if (managed) lines.push(managed);
+    const fields = Object.entries(obj.data).filter(([k]) => !RESERVED_FIELDS.includes(k));
     if (fields.length) {
       lines.push([]);
       const keyWidth = Math.min(16, Math.max(...fields.map(([k]) => k.length)));
@@ -284,7 +308,7 @@ export function renderTypePage(store: Store, typeName: string, width: number): P
   const linkLines: number[] = [];
   if (!type) return { lines: [[{ text: `no type ${typeName}`, color: "red" }]], links, linkLines };
   const objects = store.objectsOfType(typeName);
-  lines.push([{ text: typeName, bold: true, color: "magenta" }, { text: ` ${type.layer.name} · ${objects.length} objects`, dim: true }]);
+  lines.push([{ text: typeName, bold: true, color: "magenta" }, { text: ` ${objects.length} objects`, dim: true }]);
   for (const w of wrap(type.schema.description, width)) lines.push([{ text: w, italic: true }]);
   lines.push([{ text: displayPath(type.path), dim: true }]);
   const fields = Object.entries(type.schema.fields);
@@ -340,9 +364,9 @@ export interface ActivityEntry {
   /** What made the change: `write`, `edit`, `bash`, `o6y mv`… */
   via: string;
   layer: string;
+  /** The sessions behind the change, as logged. */
+  source?: string;
 }
-
-const LOG_LINE = /^- (\S+) (create|update|delete) (.+) \((.+)\)$/;
 
 /** Parses a layer's log.md, oldest first. */
 export function parseLog(text: string, layer: string): ActivityEntry[] {
@@ -350,7 +374,7 @@ export function parseLog(text: string, layer: string): ActivityEntry[] {
   for (const line of text.split("\n")) {
     const m = LOG_LINE.exec(line);
     const at = m ? Date.parse(m[1]!) : NaN;
-    if (m && !Number.isNaN(at)) out.push({ at, action: m[2] as ActivityAction, target: m[3]!, via: m[4]!, layer });
+    if (m && !Number.isNaN(at)) out.push({ at, action: m[2] as ActivityAction, target: m[3]!, via: m[4]!, layer, source: m[5] });
   }
   return out;
 }
@@ -507,7 +531,7 @@ export function renderActivityPage(store: Store, row: ActivityRow, width: number
   const stamp = (at: number) => new Date(at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "medium" });
   const describeEntry = (e: ActivityEntry): Line => {
     const a = ACTION_MARK[e.action];
-    return [{ text: `${a.mark} ${a.verb}`, color: a.color }, { text: ` ${stamp(e.at)} · ${e.via} · ${e.layer}`, dim: true }];
+    return [{ text: `${a.mark} ${a.verb}`, color: a.color }, { text: ` ${stamp(e.at)} · ${e.via}${e.source ? ` · ${e.source}` : ""}`, dim: true }];
   };
   if (row.kind === "entry") {
     const { object, type } = activityTarget(store, row);
@@ -541,6 +565,81 @@ export function renderActivityPage(store: Store, row: ActivityRow, width: number
       { text: via, dim: true },
       { text: truncate(summary ? ` — ${summary}` : "", Math.max(0, width - time.length - e.target.length - via.length - 2)), dim: true },
     ]);
+  }
+  return { lines, links, linkLines };
+}
+
+// ── dreams ───────────────────────────────────────────────────────────────
+
+const DREAM_COLOR: Record<string, string> = { running: "cyan", done: "green", partial: "yellow", aborted: "yellow", failed: "red" };
+const dreamWhen = (run: DreamRun) => new Date(run.startedAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
+
+/** One row of the dreams list. */
+export function dreamLine(run: DreamRun, width: number, selected: boolean): Line {
+  const left = `${dreamWhen(run)} `;
+  const done = run.sessions.filter((s) => s.ok || s.summary).length;
+  const right = run.status === "running" ? ` dreaming ${done}/${run.planned ?? "?"}` : ` ${run.status} · ${run.changes.length}Δ`;
+  return [
+    { text: truncate(left, width), color: selected ? "cyan" : undefined, bold: selected, inverse: selected },
+    { text: truncate(right.padStart(Math.max(0, width - left.length)), Math.max(0, width - left.length)), color: DREAM_COLOR[run.status], dim: !selected },
+  ];
+}
+
+/** The right-hand page for a dream: what it read, what it changed, what it cost. */
+export function renderDreamPage(store: Store, run: DreamRun, width: number): Page {
+  const links: string[] = [];
+  const linkLines: number[] = [];
+  const lines: Line[] = [];
+  const wrapped = (text: string, indent = "  ") => lines.push(...wrap(text.trim().replace(/\s+/g, " "), Math.max(10, width - indent.length)).map((t): Line => [{ text: indent + t, dim: true }]));
+  const heading = (text: string) => lines.push([], [{ text, bold: true, color: "magenta" }]);
+  const ok = run.sessions.filter((s) => s.ok).length;
+
+  lines.push([{ text: dreamWhen(run), bold: true }, { text: ` ${run.status}`, color: DREAM_COLOR[run.status], bold: true }]);
+  if (run.status === "running") lines.push([{ text: `now: ${run.step ?? "starting"}`, color: "cyan" }]);
+  lines.push([{ text: `${ok}/${run.planned ?? run.sessions.length} sessions · ${run.changes.length} changes · $${run.cost.toFixed(4)} · ${run.tokens} tokens`, dim: true }]);
+  const model = run.models.analyzer === run.models.organizer ? run.models.analyzer || "session model" : `${run.models.analyzer || "session model"} / ${run.models.organizer || "session model"}`;
+  lines.push([{ text: truncate(model, width), dim: true }]);
+  if (run.error) {
+    heading("Not applied");
+    wrapped(run.error);
+  }
+
+  heading("Changes");
+  if (!run.changes.length) lines.push([{ text: run.status === "running" ? "  applied when the dream finishes" : "  none", dim: true }]);
+  for (const c of run.changes) {
+    const id = c.path.split("/").slice(-2).join("/").replace(/\.md$/, "");
+    const exists = store.objects.has(id);
+    if (exists) {
+      links.push(id);
+      linkLines.push(lines.length);
+    }
+    const mark = ACTION_MARK[c.action as ActivityAction];
+    const summary = store.objects.get(id)?.summary;
+    lines.push([
+      { text: `  ${mark?.mark ?? "?"} `, color: mark?.color },
+      { text: id, color: exists ? "cyan" : "red" },
+      { text: truncate(summary ? ` — ${summary}` : "", Math.max(0, width - id.length - 4)), dim: true },
+    ]);
+  }
+  if (run.conflicts.length) {
+    heading("Kept the live version (edited during the dream)");
+    for (const path of run.conflicts) lines.push([{ text: `  ${truncate(path.split("/").slice(-2).join("/"), width - 2)}`, color: "yellow" }]);
+  }
+
+  heading("Sessions");
+  for (const s of run.sessions) {
+    const working = run.status === "running" && !s.ok && !s.summary;
+    lines.push([{ text: working ? "  ⋯ " : s.ok ? "  ✓ " : "  ✗ ", color: working ? "cyan" : s.ok ? "green" : "red" }, { text: truncate(s.cwd, Math.max(4, width - 4)) }]);
+    lines.push([{ text: `    ${truncate(s.id, Math.max(4, width - 4))}`, dim: true }]);
+    if (s.summary) wrapped(s.summary, "    ");
+  }
+  if (run.organizer) {
+    heading(run.organizer.ok ? "Organizer" : run.status === "running" ? "Organizer (working)" : "Organizer failed");
+    if (run.organizer.summary) wrapped(run.organizer.summary);
+  }
+  if (run.snapshot) {
+    heading("Store before this dream");
+    wrapped(run.snapshot);
   }
   return { lines, links, linkLines };
 }

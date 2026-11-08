@@ -5,17 +5,12 @@ in the spirit of Karpathy's "LLM wiki". The agent just reads and writes `.md` fi
 normal tools; o6y validates every write against agent-editable `.schema.md` files, serves a
 virtual `index.md`, computes backlinks, and keeps the store consistent.
 
-## Stores and layers
+## The store
 
-| Layer   | Default path        | Override                                  |
-|---------|---------------------|-------------------------------------------|
-| global  | `~/.agents/o6y`     | `O6Y_HOME` env, `--o6y-global <path>`     |
-| project | `<cwd>/.agents/o6y` | `O6Y_PROJECT` env, `--o6y-project <path>` |
+There is one store, at `~/.agents/o6y` (override with the `O6Y_HOME` env or `--o6y-global <path>`). It is global by design: memory becomes more useful the more context it holds, and what is learned in one repo often helps in another.
 
-- Types share one namespace. A project may add new types but may not redefine a global type.
-- Object IDs (`type/slug`) are unique across layers.
-- Project objects may link to global objects; global objects may **not** link into a project.
-- If both paths resolve to the same directory, there is only one layer.
+- Object IDs (`type/slug`) are unique in the store.
+- Knowledge specific to one repo names that repo, and carries a path field (`location: ~/Projects/north`) so it ranks first when working there.
 
 ## Layout
 
@@ -43,8 +38,6 @@ pinnedBudget: 2500        # max characters (summary + body) of all pinned object
 ---
 Free-form guidance for the whole memory (shown in the system prompt).
 ```
-
-In the project layer, the root schema's settings override the global layer's settings.
 
 ## Type schema (`/<type>/.schema.md`)
 
@@ -86,6 +79,22 @@ Body text with [[concept/llm-wiki]] links.
 Link values in frontmatter can be written as `org/openai`, `"[[org/openai]]"` or unquoted
 `[[org/openai]]` (a list of those for `many`).
 
+## Managed attributes
+
+Every object's frontmatter carries an `o6y:` block that the store maintains, so it can be trusted. It is rebuilt on every write, whichever tool made it, and anything a writer puts there is replaced. It's reserved, like `summary` and `pinned`.
+
+```yaml
+o6y:
+  created: 2026-11-08    # the day the object was created
+  updated: 2026-11-08    # the last day its content changed
+```
+
+- `updated` changes only when the object's content does. Link rewrites and schema migrations leave them alone.
+- The viewer shows them on a highlighted line under the object's title.
+- A rename keeps the block, and a merge combines both objects' blocks.
+- Objects from before this existed gain `updated` on their next change and never a guessed `created`.
+- The sessions behind a change go in `log.md`, not on the object, so they cost no tokens when an object is read: `- <time> update note/x (dream) [pi:<session id>]`. Sessions identify themselves with `O6Y_SOURCE`, which the extension sets. A write from outside a session records no source.
+
 ## Pinned objects
 
 `pinned: true` loads an object's full content into the system prompt in every session, in a "Pinned" section above the catalog. This is how knowledge gets marked as always relevant, while the catalog itself stays generated.
@@ -100,7 +109,7 @@ The combined size (summary + body) of all pinned objects is capped by `pinnedBud
   the warning is appended to the tool result, and the target is listed as a **wanted page** in the
   index and in lint.
 - Links that are wrong no matter what gets written later stay **errors**: malformed links,
-  a typed field pointing at a disallowed type, and global → project links.
+  and a typed field pointing at a disallowed type.
 - Backlinks are computed and appended when an object is read.
 
 ## Validation and enforcement
@@ -164,13 +173,38 @@ semantic:
 ---
 ```
 
-As with the other settings, the project layer's values override the global layer's. `threshold` and `minSimilarity` are tuned to the default models (on a 208-object store: no off-topic prompt fired, and a right object was suggested for 91% of prompts that had one); re-tune them after changing either model.
+`threshold` and `minSimilarity` are tuned to the default models (on a 208-object store: no off-topic prompt fired, and a right object was suggested for 91% of prompts that had one); re-tune them after changing either model.
 
 - **Index:** one vector per object, embedded (`search_document`) from its id, type description, summary, fields and body. Vectors live outside the store, in `$O6Y_CACHE` (default `$XDG_CACHE_HOME/o6y` or `~/.cache/o6y`), one directory per layer: `vectors.f32` (unit-length float32 rows) and `index.json` (model, dimension, ids, content hashes). Only objects whose text changed are re-embedded; a model change re-embeds everything. Objects that don't load (invalid frontmatter, a type without a schema, an id taken by another layer) aren't indexed; `o6y reindex` and `o6y search` name them. A layer whose objects all lost to another layer's ids keeps its index, so overlapping stores don't wipe each other's vectors. The cache can always be deleted and rebuilt.
 - **Search:** the query is embedded (`search_query`) and every object is scored by cosine similarity (brute force). Objects below `minSimilarity` are dropped *before* rerank, so the reranker can't promote a far-off object on a terse query, and still fills its slots from the rest. The top `candidates` are reranked. Scores are rerank relevance, 0–1. Ranking is about as good with embeddings alone; rerank is kept because its scores are calibrated enough for one fixed `threshold`.
 - **Relevant objects:** on each user message (not slash commands or replies under 3 words), the extension runs the search and, when objects score at least `threshold`, adds a `<o6y-relevant>` message after the user's, listing them as `- [[id]] (score) — summary`. Pinned objects (already in the prompt in full) and objects already suggested this session are left out; after a compaction, objects can be suggested again. Suggestions give up after 2.5 s, and any error means no suggestion, never a failed turn. The extension re-embeds changed objects in the background (at session start and whenever the store changed); a suggestion uses the index as it is. In pi's UI the message renders as one line (`◆ o6y 2 relevant: …`), with scores and summaries when expanded; the footer shows `o6y: indexing memory…` while the index syncs.
 - **Suggestion log:** `$O6Y_CACHE/suggestions.jsonl` records, locally, each suggestion (session, turn, ids, scores and similarities) and the first time the agent then opens a suggested object: a `read` of its file, or a bash command naming it (`o6y show|links|backlinks <id>` or a `<type>/<slug>.md` path). User messages are written only with `logPrompts: true`. `o6y suggestions [--since 7d]` summarizes it: how often suggestions were opened, by score band, and which objects keep being suggested without being opened.
 - **CLI:** `o6y search <question>` syncs the index, then searches. It lists only results at or above `threshold` (`--min-score S` overrides; `--min-score 0` lists the top N whatever they score). `--no-rerank` ranks by similarity alone, with no minimum unless `--min-score` is given. Without the opt-in or a key it falls back to word matching, with a note. `o6y reindex [--full]` syncs the index explicitly.
+
+## Dreaming
+
+`/o6y-dream` consolidates past pi sessions into memory. `o6y dream run` does the same from the command line (and so from an agent's shell) through a headless pi, skipping the session that called it. `o6y dream` shows how many sessions are waiting and how the last dream went, and the viewer lists every dream under `3` (`o6y view --dreams`), where `R` runs one after asking. Options: `--dry-run` (only count), `--here` (only sessions from this directory), `--limit N` (oldest first). It runs when asked, and applies its changes without review.
+
+- **Input:** session files under `PI_CODING_AGENT_SESSION_DIR` (default `~/.pi/agent/sessions`). Only the active branch is read, without system prompts, thinking or `o6y-relevant` messages, and tool calls and results are trimmed. The running session is left out, as are sessions with no new user message.
+- **Agents:** nested in-memory pi sessions, so a dream writes no session files. They have validated store tools and a transcript reader, and no shell or file tools, because transcripts are untrusted. One analyzer runs per session, in order, and checks memory against the transcript. Then an organizer, which sees no transcripts, tidies the store. Everything goes in the one store; an analyzer marks repo-specific knowledge with the repo's name and a `location:` field, and writes how code or tools behaved in an older session as observed on that date, since it can't check what is true today.
+- **Provenance:** `log.md` records the sessions behind each change a dream applies. Analyzers write each claim with how it is known (ran it, someone stated it, or inferred and unconfirmed) and when it could stop being true.
+- **Applying:** agents work on a staged copy. At the end it is applied as one validated change, logged as `(dream)`. A file also edited live during the dream keeps the live version and is listed as a conflict. An aborted dream applies nothing.
+- **State:** in `$O6Y_CACHE/dreams`: `ledger.json` (the last entry read per session, so a resumed session continues from there; a session is recorded only once its changes are applied), `runs/<id>/run.json`, `runs/<id>/base/` (the store before the dream), and a lock allowing one dream at a time.
+
+Settings go in a `dream:` block in the root schema:
+
+```md
+---
+dream:
+  model: openrouter/some/model   # provider/model-id for both agents; empty = the pi session's model
+  analyzerModel: ""              # overrides model for analyzers
+  organizerModel: ""             # overrides model for the organizer
+  thinking: ""                   # off, minimal, low, medium, high, xhigh, max; empty = the pi session's level
+  maxToolResultChars: 3000       # trim tool calls and results to this size
+  pageChars: 30000               # transcript page size
+  instructions: ""               # extra guidance for both agents
+---
+```
 
 ## Manual (skill)
 
@@ -180,7 +214,7 @@ As with the other settings, the project layer's values override the global layer
 
 - `log.md` is appended automatically for every create, update and delete, including schema changes and bash migrations.
 - `/o6y-lint` and `o6y lint` report invalid objects, warnings, wanted pages, orphans and undeclared fields.
-- o6y registers no tools. The `o6y` command (`src/cli`, bundled to `dist/` so it runs on plain Node) does queries and multi-file maintenance: `query`, `show`, `links`, `backlinks`, `index`, `lint`, `stats`, `log`, `prompt`, `export`, `new`, `set`, `mv`, `merge`, `rm`, `field add|rename|drop`, `type rename`, `check`, `search`, `reindex`, `suggestions` and `view`. The extension puts `bin/o6y` on the agent's PATH, pointing it at the Node that runs pi and at the stores in use (`O6Y_HOME`, `O6Y_PROJECT`), so nothing has to be installed. Write commands build the full change in memory, validate it against the whole store (the same rules as a write) and only then write, and they log with the command name. When one runs inside a bash call, the bash hook doesn't log those files again.
+- o6y registers no tools. The `o6y` command (`src/cli`, bundled to `dist/` so it runs on plain Node) does queries and multi-file maintenance: `query`, `show`, `links`, `backlinks`, `index`, `lint`, `stats`, `log`, `prompt`, `export`, `new`, `set`, `mv`, `merge`, `rm`, `field add|rename|drop`, `type rename`, `check`, `search`, `reindex`, `suggestions` and `view`. The extension puts `bin/o6y` on the agent's PATH, pointing it at the Node that runs pi and at the store in use (`O6Y_HOME`), so nothing has to be installed. Write commands build the full change in memory, validate it against the whole store (the same rules as a write) and only then write, and they log with the command name. When one runs inside a bash call, the bash hook doesn't log those files again.
 - `/o6y` shows store status (including whether semantic search is on) and refreshes the prompt section.
 - Four minimal starter types are seeded into an empty global store:
   - `person` (role, team; optional `## Review notes`)
@@ -199,4 +233,4 @@ As with the other settings, the project layer's values override the global layer
   - **`read`:** `tool_result` serves virtual `index.md` files (replacing the "file not found" error) and appends the backlinks footer to object reads.
   - **`bash`:** the store is snapshotted in `tool_call`. In `tool_result` the whole store is validated, and on new errors every change is rolled back.
 - `skills/o6y/SKILL.md`: the manual, registered through `resources_discover`.
-- `src/mcp/server.ts`: the MCP adapter (`o6y mcp`, stdio) for agents whose tools can't be hooked. It offers tools in their place: `o6y_show` (reads, with the same virtual indexes and backlink footer as pi's `read`), `o6y_write` and `o6y_edit` (validated in full with a `Plan` before anything is written, logged with `mcp`), `o6y_query`, `o6y_search`, and `o6y_cli`, which runs any other CLI command in-process. The system prompt section, with rules that name these tools (`PromptOptions.mcp`), is the server's `instructions`. Writes made outside these tools aren't validated, and there are no per-message suggestions.
+- `src/mcp/server.ts` (**deprecated**; o6y is a pi extension and this will be removed): the MCP adapter (`o6y mcp`, stdio) for agents whose tools can't be hooked. It offers tools in their place: `o6y_show` (reads, with the same virtual indexes and backlink footer as pi's `read`), `o6y_write` and `o6y_edit` (validated in full with a `Plan` before anything is written, logged with `mcp`), `o6y_query`, `o6y_search`, and `o6y_cli`, which runs any other CLI command in-process. The system prompt section, with rules that name these tools (`PromptOptions.mcp`), is the server's `instructions`. Writes made outside these tools aren't validated, and there are no per-message suggestions.

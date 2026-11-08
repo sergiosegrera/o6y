@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { stampObject } from "./core/managed.ts";
 import { homedir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -86,7 +87,6 @@ function exposeCli(layers: Layer[]): void {
   // Only when pi runs on a plain Node or Bun binary; a compiled pi binary can't run scripts.
   if (/^(node|bun)(\.exe)?$/i.test(basename(process.execPath))) process.env.O6Y_NODE = process.execPath;
   process.env.O6Y_HOME = layers[0]!.root;
-  if (layers[1]) process.env.O6Y_PROJECT = layers[1].root;
 }
 
 const SCHEMA_MIGRATION_HINT =
@@ -104,7 +104,7 @@ interface RelevantDetails {
 }
 
 type Pending =
-  | { tool: "write"; path: string; existed: boolean; warnings: Issue[] }
+  | { tool: "write"; path: string; existed: boolean; original: string | null; warnings: Issue[] }
   | { tool: "edit"; path: string; info: PathInfo; original: string | null; before: Store }
   | { tool: "bash"; snapshot: Snapshot; before: Store };
 
@@ -116,8 +116,7 @@ export default function o6y(pi: ExtensionAPI) {
   // The manual is a skill so only its description costs prompt space; loaded on demand.
   pi.on("resources_discover", () => ({ skillPaths: [SKILL_PATH] }));
 
-  pi.registerFlag("o6y-global", { type: "string", description: "Path of the global o6y store (default ~/.agents/o6y)" });
-  pi.registerFlag("o6y-project", { type: "string", description: "Path of the project o6y store (default <cwd>/.agents/o6y)" });
+  pi.registerFlag("o6y-global", { type: "string", description: "Path of the o6y store (default ~/.agents/o6y)" });
 
   let layers: Layer[] = [];
   let promptSection = "";
@@ -137,17 +136,15 @@ export default function o6y(pi: ExtensionAPI) {
   /** Store fingerprint the search index was last synced at, and the sync in flight. */
   let indexedSignature = "";
   let indexing: Promise<void> | undefined;
+  /** Cancels the dream in flight when the session shuts down. */
+  let dreaming: AbortController | undefined;
 
   function configure(cwd: string): void {
     const flagGlobal = pi.getFlag("o6y-global");
-    const flagProject = pi.getFlag("o6y-project");
     const globalRoot = expandHome(
       (typeof flagGlobal === "string" && flagGlobal) || process.env.O6Y_HOME || join(homedir(), ".agents", "o6y"),
     );
-    const projectRoot = expandHome(
-      (typeof flagProject === "string" && flagProject) || process.env.O6Y_PROJECT || join(cwd, ".agents", "o6y"),
-    );
-    layers = makeLayers(resolve(cwd, globalRoot), resolve(cwd, projectRoot));
+    layers = makeLayers(resolve(cwd, globalRoot));
     workDirs = workPaths(cwd);
     exposeCli(layers);
   }
@@ -199,6 +196,14 @@ export default function o6y(pi: ExtensionAPI) {
     return `\n[o6y] saved with warnings (not blocking; fix when you can, e.g. by writing the missing objects):\n${formatIssues(warnings, layers)}`;
   }
 
+  /** Rebuilds the managed attributes of an object that pi's own tools just wrote. */
+  const stampFile = (path: string, previous: string | null) => {
+    const current = classifyPath(layers, path)?.kind === "object" ? readOrNull(path) : null;
+    if (current === null) return;
+    const next = stampObject(previous, current);
+    if (next !== current) writeFileSync(path, next);
+  };
+
   // --- Before a tool runs: validate writes up front, remember state for edits and bash. ---
 
   pi.on("tool_call", async (event, ctx) => {
@@ -227,7 +232,7 @@ export default function o6y(pi: ExtensionAPI) {
       const touched = new Set([path]);
       const blocking = blockingIssues(before, after, touched);
       if (blocking.length) return { block: true, reason: rejection(info, path, blocking) };
-      pending.set(event.toolCallId, { tool: "write", path, existed: existsSync(path), warnings: changeWarnings(before, after, touched) });
+      pending.set(event.toolCallId, { tool: "write", path, existed: existsSync(path), original: readOrNull(path), warnings: changeWarnings(before, after, touched) });
     } else if (event.toolName === "edit") {
       // The edited content is only known after the tool applies it; validated in tool_result.
       pending.set(event.toolCallId, { tool: "edit", path, info, original: readOrNull(path), before: load() });
@@ -278,7 +283,8 @@ export default function o6y(pi: ExtensionAPI) {
 
     if (state.tool === "write") {
       if (event.isError) return;
-      appendLog(layers, [{ action: state.existed ? "update" : "create", path: state.path }], "write");
+      stampFile(state.path, state.original);
+      appendLog(layers, [{ action: state.existed ? "update" : "create", path: state.path, source: process.env.O6Y_SOURCE }], "write");
       if (state.warnings.length) return { content: [...event.content, { type: "text", text: warningsNote(state.warnings) }] };
       return;
     }
@@ -297,7 +303,8 @@ export default function o6y(pi: ExtensionAPI) {
           isError: true,
         };
       }
-      appendLog(layers, [{ action: "update", path: state.path }], "edit");
+      stampFile(state.path, state.original);
+      appendLog(layers, [{ action: "update", path: state.path, source: process.env.O6Y_SOURCE }], "edit");
       const warnings = changeWarnings(state.before, after, touched);
       if (warnings.length) return { content: [...event.content, { type: "text", text: warningsNote(warnings) }] };
       return;
@@ -323,15 +330,17 @@ export default function o6y(pi: ExtensionAPI) {
         isError: true,
       };
     }
-    // `o6y` write commands log their own changes (with the command name); don't log those twice.
+    // `o6y` write commands and dreams log their own changes; don't log those twice.
     const loggedByCli = (path: string) =>
       layers.some((layer) => {
         const logPath = join(layer.root, LOG_FILE);
         const before = state.snapshot.files.get(logPath)?.toString("utf8") ?? "";
         const added = readOrNull(logPath)?.slice(before.length) ?? "";
-        return added.includes(` ${describe(layers, path)} (o6y `);
+        return added.includes(` ${describe(layers, path)} (o6y `) || added.includes(` ${describe(layers, path)} (dream)`);
       });
-    appendLog(layers, changesToLog(changes).filter((c) => !loggedByCli(c.path)), "bash");
+    const direct = changesToLog(changes).filter((c) => !loggedByCli(c.path));
+    for (const c of direct) if (c.action !== "delete") stampFile(c.path, state.snapshot.files.get(c.path)?.toString("utf8") ?? null);
+    appendLog(layers, direct.map((c) => ({ ...c, source: process.env.O6Y_SOURCE })), "bash");
     const warnings = changeWarnings(state.before, after, new Set());
     const note = warnings.length ? ` New warnings (not blocking):\n${formatIssues(warnings, layers)}` : "";
     return {
@@ -408,6 +417,48 @@ export default function o6y(pi: ExtensionAPI) {
     },
   });
 
+  pi.registerCommand("o6y-dream", {
+    description: "Consolidate past sessions into memory. Options: --dry-run, --here (this directory only), --limit N",
+    handler: async (args, ctx) => {
+      if (!layers.length) configure(ctx.cwd);
+      const words = args.trim().split(/\s+/).filter(Boolean);
+      const limitAt = words.indexOf("--limit");
+      const limit = limitAt >= 0 ? Number(words[limitAt + 1]) : undefined;
+      const report = (text: string, level: "info" | "warning") => (ctx.hasUI ? ctx.ui.notify(text, level) : console.log(text));
+      if (limit !== undefined && (!Number.isInteger(limit) || limit <= 0)) return report("o6y dream: --limit needs a positive integer", "warning");
+      // Loaded on use: the SDK is heavy and only a dream needs it.
+      const [{ formatRun, runDream }, { sdkAgent }, { sessionsRoot }] = await Promise.all([
+        import("./dream/runner.ts"),
+        import("./dream/agent.ts"),
+        import("./dream/transcript.ts"),
+      ]);
+      dreaming = new AbortController();
+      try {
+        const run = await runDream({
+          cwd: ctx.cwd,
+          env: process.env,
+          storeRoot: layers[0]!.root,
+          sessionsDir: sessionsRoot(process.env),
+          excludeSession: process.env.O6Y_DREAM_EXCLUDE || ctx.sessionManager.getSessionId(),
+          here: words.includes("--here"),
+          limit,
+          dryRun: words.includes("--dry-run"),
+          settings: load().dream,
+          agent: sdkAgent(ctx, pi.getThinkingLevel()),
+          signal: dreaming.signal,
+          progress: (text) => ctx.hasUI && ctx.ui.setStatus("o6y-dream", `o6y ${text}`),
+        });
+        report(formatRun(run), run.status === "done" || run.status === "nothing" || run.status === "dry-run" ? "info" : "warning");
+        refreshPrompt();
+      } catch (err) {
+        report(`o6y dream failed: ${err instanceof Error ? err.message : err}`, "warning");
+      } finally {
+        dreaming = undefined;
+        if (ctx.hasUI) ctx.ui.setStatus("o6y-dream", undefined);
+      }
+    },
+  });
+
   // --- Lifecycle ---
 
   pi.on("session_start", async (_event, ctx: ExtensionContext) => {
@@ -426,6 +477,7 @@ export default function o6y(pi: ExtensionAPI) {
     used.clear();
     turn = 0;
     sessionId = ctx.sessionManager.getSessionId();
+    process.env.O6Y_SOURCE = `pi:${sessionId}`;
     const store = refreshPrompt();
     refreshIndex(store, ctx);
     const errors = store.errors().length;
@@ -451,6 +503,7 @@ export default function o6y(pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async () => {
+    dreaming?.abort();
     pending.clear();
   });
 }

@@ -5,23 +5,13 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { type Document, isMap, isScalar, parse, parseDocument, Scalar } from "yaml";
+import { joinDoc, splitDoc } from "./frontmatter.ts";
 import { appendLog, type LogAction } from "./fsops.ts";
 import { normalizeLinkValue } from "./links.ts";
-import { blockingIssues, changeWarnings, findLayer, type Issue, type Layer, type Overlay, SCHEMA_FILE, Store } from "./store.ts";
+import { stampObject } from "./managed.ts";
+import { blockingIssues, changeWarnings, classifyPath, findLayer, type Issue, type Layer, type Overlay, SCHEMA_FILE, Store } from "./store.ts";
 
-const FENCE = /^---[ \t]*\r?\n([\s\S]*?)\r?\n?---[ \t]*(?:\r?\n|$)/;
-
-/** Splits a document into raw frontmatter (without fences) and body. */
-export function splitDoc(text: string): { frontmatter: string | undefined; body: string } {
-  const match = FENCE.exec(text);
-  if (!match) return { frontmatter: undefined, body: text };
-  return { frontmatter: match[1] ?? "", body: text.slice(match[0].length) };
-}
-
-export function joinDoc(frontmatter: string, body: string): string {
-  const fm = frontmatter.endsWith("\n") ? frontmatter : `${frontmatter}\n`;
-  return `---\n${fm}---\n${body}`;
-}
+export { joinDoc, splitDoc };
 
 /**
  * Edits a document's frontmatter as a YAML document (comments and key order are kept). The
@@ -149,7 +139,7 @@ export function retargetLinks(store: Store, plan: Plan, map: (id: string) => str
     } catch {
       continue; // unparseable frontmatter: leave the file to lint
     }
-    if (next !== current) plan.write(obj.path, next);
+    if (next !== current) plan.write(obj.path, next, { mechanical: true });
   }
 }
 
@@ -165,6 +155,14 @@ export interface PlanResult {
 /** An in-memory set of file writes and deletes, validated as one transaction before applying. */
 export class Plan {
   readonly overlay: Overlay = new Map();
+  /** The session making this change, logged with it; a function when it differs per file. */
+  source?: string | ((path: string) => string | undefined);
+  /** False when the content was already stamped (a dream's staged copy). */
+  stamping = true;
+  /** The whole plan is a migration: objects keep their `updated` date. */
+  mechanical = false;
+  private readonly mechanicalPaths = new Set<string>();
+  private readonly inherits = new Map<string, string[]>();
 
   constructor(readonly layers: Layer[]) {}
 
@@ -178,8 +176,38 @@ export class Plan {
     }
   }
 
-  write(path: string, content: string): void {
+  write(path: string, content: string, opts: { mechanical?: boolean } = {}): void {
     this.overlay.set(path, content);
+    if (opts.mechanical) this.mechanicalPaths.add(path);
+    else this.mechanicalPaths.delete(path);
+  }
+
+  /** `to` continues `from` (a rename or merge), so it keeps its managed attributes. */
+  inherit(to: string, from: string): void {
+    this.inherits.set(to, [...(this.inherits.get(to) ?? []), from]);
+  }
+
+  private disk(path: string): string | null {
+    try {
+      return readFileSync(path, "utf8");
+    } catch {
+      return null;
+    }
+  }
+
+  /** Rebuilds the managed block of every object in the plan; repeating it changes nothing. */
+  private stamp(): void {
+    if (!this.stamping) return;
+    for (const [path, content] of this.overlay) {
+      if (content === null || classifyPath(this.layers, path)?.kind !== "object") continue;
+      this.overlay.set(
+        path,
+        stampObject(this.disk(path), content, {
+          mechanical: this.mechanical || this.mechanicalPaths.has(path),
+          inherit: (this.inherits.get(path) ?? []).map((p) => this.disk(p)).filter((t) => t !== null),
+        }),
+      );
+    }
   }
 
   delete(path: string): void {
@@ -204,6 +232,7 @@ export class Plan {
 
   /** Validates the plan against the current store. Blocking issues are new errors it would cause. */
   validate(before: Store = Store.load(this.layers)): PlanResult {
+    this.stamp();
     const after = Store.load(this.layers, this.overlay);
     const touched = new Set(this.overlay.keys());
     return {
@@ -215,6 +244,7 @@ export class Plan {
 
   /** Writes the plan to disk, removes type folders it emptied, and logs the changes. */
   apply(via: string): { action: LogAction; path: string }[] {
+    this.stamp();
     const changes = this.changes();
     for (const { action, path } of changes) {
       if (action === "delete") continue;
@@ -232,7 +262,8 @@ export class Plan {
         } catch {}
       }
     }
-    if (changes.length) appendLog(this.layers, changes, via);
+    const { source } = this;
+    if (changes.length) appendLog(this.layers, changes.map((c) => ({ ...c, source: typeof source === "function" ? source(c.path) : source })), via);
     return changes;
   }
 }

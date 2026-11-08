@@ -1,57 +1,66 @@
 #!/usr/bin/env node
 import {
+  workPaths
+} from "./chunk-jd52nexw.js";
+import {
+  dreamInvocation
+} from "./chunk-v6va4yga.js";
+import {
+  buildPromptSection,
+  displayPath,
+  renderObjectFooter,
+  renderRootIndex,
+  renderTypeIndex
+} from "./chunk-j881ctwp.js";
+import {
   Plan,
   editFrontmatter,
   parseValue,
   renameKey,
-  retargetLinks,
-  splitDoc,
-  workPaths
-} from "./chunk-yngwefga.js";
+  retargetLinks
+} from "./chunk-w5dq0wfg.js";
+import {
+  lint,
+  neighbors,
+  query
+} from "./chunk-9q7vjba0.js";
 import {
   cacheRoot,
   embedderFor,
-  lint,
-  neighbors,
-  query,
   readSuggestionLog,
   search,
   semanticUnavailable,
   suggestionLogPath,
   suggestionStats,
   syncIndex
-} from "./chunk-j0bvdvaa.js";
+} from "./chunk-xg2qjjsk.js";
 import {
   LOG_FILE,
   Store,
   __require,
-  buildPromptSection,
   canonicalPath,
   classifyPath,
-  displayPath,
   findLayer,
   formatIssues,
   makeLayers,
   parseId,
   pinnedCost,
-  renderObjectFooter,
-  renderRootIndex,
-  renderTypeIndex
-} from "./chunk-4m0nbp6g.js";
+  splitDoc
+} from "./chunk-h52xt07b.js";
 
 // src/cli/o6y.ts
 import { readFileSync as readFileSync2 } from "node:fs";
 
 // src/cli/main.ts
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, relative, resolve } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
+import { spawnSync } from "node:child_process";
 import { parseArgs } from "node:util";
 class UsageError extends Error {
 }
 var DRY = { "dry-run": { type: "boolean" } };
 var JSON_OPT = { json: { type: "boolean" } };
-var IN = { in: { type: "string" } };
 function where(layers, path) {
   const layer = findLayer(layers, path);
   return layer ? `${layer.name}:${relative(layer.root, path)}` : displayPath(path);
@@ -69,14 +78,6 @@ function needId(id) {
   if (!parsed)
     throw new UsageError(`\`${id ?? ""}\` is not a valid id; use type/slug in kebab-case, e.g. note/release-train`);
   return parsed;
-}
-function pickLayer(ctx, name, fallback) {
-  if (!name)
-    return fallback ?? ctx.layers[0];
-  const layer = ctx.layers.find((l) => l.name === name);
-  if (!layer)
-    throw new UsageError(`--in must be one of: ${ctx.layers.map((l) => l.name).join(", ")}`);
-  return layer;
 }
 function objectPath(layer, id) {
   const { type, slug } = needId(id);
@@ -96,6 +97,7 @@ function printIssues(ctx, title, issues) {
 ${formatIssues(issues, ctx.layers)}`);
 }
 function commit(ctx, plan, via, dryRun) {
+  plan.source = ctx.env.O6Y_SOURCE;
   const result = plan.validate(ctx.load());
   if (result.blocking.length) {
     printIssues(ctx, "o6y: rejected; nothing was changed. The change would leave the store invalid:", result.blocking);
@@ -112,6 +114,33 @@ function commit(ctx, plan, via, dryRun) {
 `));
   printIssues(ctx, "warnings (not blocking):", result.warnings);
   return 0;
+}
+async function runDreamInPi(ctx, o) {
+  if (o.limit !== undefined && !/^[1-9]\d*$/.test(o.limit))
+    throw new UsageError("--limit must be a positive whole number");
+  const flags = [o.here && "--here", o.limit && `--limit ${o.limit}`, o["dry-run"] && "--dry-run"].filter(Boolean);
+  const { readRuns } = await import("./chunk-yawkn1gv.js");
+  const previous = readRuns(ctx.env)[0]?.id;
+  const { args, env } = dreamInvocation(ctx.layers[0].root, flags, ctx.env);
+  const res = spawnSync("pi", args, {
+    cwd: ctx.cwd,
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+    encoding: "utf8",
+    maxBuffer: 67108864
+  });
+  if (res.error) {
+    ctx.err(`o6y: could not start pi (${res.error.message}). Dreams run through pi, so it must be on PATH.`);
+    return 1;
+  }
+  if (res.stdout?.trim())
+    ctx.out(res.stdout.trim());
+  if (res.stderr?.trim())
+    ctx.err(res.stderr.trim());
+  if (res.status !== 0)
+    return res.status ?? 1;
+  const run = readRuns(ctx.env)[0];
+  return run && run.id !== previous && (run.status === "failed" || run.status === "aborted") ? 1 : 0;
 }
 function readInput(ctx, file) {
   if (file)
@@ -494,14 +523,14 @@ var COMMANDS = {
     }
   },
   check: {
-    usage: "o6y check <id|path> [--file DRAFT] [--in global|project]   (content on stdin if no --file)",
+    usage: "o6y check <id|path> [--file DRAFT]   (content on stdin if no --file)",
     summary: "validate a draft as if it were written there, without writing it",
-    options: { file: { type: "string" }, ...IN },
+    options: { file: { type: "string" } },
     run(ctx, [target], o) {
       if (!target)
         throw new UsageError("missing target id or path");
       const store = ctx.load();
-      const path = target.includes("/") && (target.endsWith(".md") || target.startsWith(".") || target.startsWith("/") || target.startsWith("~")) ? canonicalPath(resolve(ctx.cwd, target.startsWith("~/") ? join(homedir(), target.slice(2)) : target)) : store.objects.get(target)?.path ?? objectPath(pickLayer(ctx, o.in), target);
+      const path = target.includes("/") && (target.endsWith(".md") || target.startsWith(".") || target.startsWith("/") || target.startsWith("~")) ? canonicalPath(resolve(ctx.cwd, target.startsWith("~/") ? join(homedir(), target.slice(2)) : target)) : store.objects.get(target)?.path ?? objectPath(ctx.layers[0], target);
       if (!classifyPath(ctx.layers, path))
         throw new UsageError(`${target} is not inside an o6y store`);
       const plan = new Plan(ctx.layers);
@@ -517,9 +546,9 @@ var COMMANDS = {
     }
   },
   new: {
-    usage: "o6y new <id> --summary TEXT [--set field=value]... [--body TEXT | --body-file F] [--in global|project] [--dry-run]",
+    usage: "o6y new <id> --summary TEXT [--set field=value]... [--body TEXT | --body-file F] [--dry-run]",
     summary: "create an object (fails if it exists)",
-    options: { summary: { type: "string" }, set: { type: "string", multiple: true }, body: { type: "string" }, "body-file": { type: "string" }, ...IN, ...DRY },
+    options: { summary: { type: "string" }, set: { type: "string", multiple: true }, body: { type: "string" }, "body-file": { type: "string" }, ...DRY },
     run(ctx, [id], o) {
       needId(id);
       const store = ctx.load();
@@ -527,7 +556,7 @@ var COMMANDS = {
         throw new UsageError(`${id} already exists (${displayPath(store.objects.get(id).path)}); use \`o6y set\` or edit it`);
       if (!o.summary)
         throw new UsageError("--summary is required");
-      const path = objectPath(pickLayer(ctx, o.in), id);
+      const path = objectPath(ctx.layers[0], id);
       const body = o["body-file"] ? readFileSync(resolve(ctx.cwd, o["body-file"]), "utf8") : o.body ?? "";
       const content = editFrontmatter("", (doc) => {
         doc.set("summary", o.summary);
@@ -561,19 +590,20 @@ var COMMANDS = {
     }
   },
   mv: {
-    usage: "o6y mv <old-id> <new-id> [--in global|project] [--dry-run]",
-    summary: "rename or move an object and rewrite every link to it",
-    options: { ...IN, ...DRY },
+    usage: "o6y mv <old-id> <new-id> [--dry-run]",
+    summary: "rename an object and rewrite every link to it",
+    options: { ...DRY },
     run(ctx, [from, to], o) {
       const store = ctx.load();
       const obj = needObject(store, from);
       needId(to);
       if (store.objects.has(to))
         throw new UsageError(`${to} already exists; use \`o6y merge ${from} ${to}\` to combine them`);
-      const dest = objectPath(pickLayer(ctx, o.in, obj.layer), to);
+      const dest = objectPath(obj.layer, to);
       const plan = new Plan(ctx.layers);
       retargetLinks(store, plan, (id) => id === from ? to : undefined);
       plan.write(dest, plan.read(obj.path));
+      plan.inherit(dest, obj.path);
       plan.delete(obj.path);
       return commit(ctx, plan, "o6y mv", !!o["dry-run"]);
     }
@@ -607,6 +637,7 @@ var COMMANDS = {
 ${extra}
 `;
       }));
+      plan.inherit(dst.path, src.path);
       plan.delete(src.path);
       return commit(ctx, plan, "o6y merge", !!o["dry-run"]);
     }
@@ -651,6 +682,7 @@ ${extra}
       if (!type)
         throw new UsageError(`no type \`${typeName ?? ""}\``);
       const plan = new Plan(ctx.layers);
+      plan.mechanical = true;
       const objects = store.objectsOfType(type.name);
       if (action === "add") {
         const [name2, kind = "string"] = rest;
@@ -750,6 +782,7 @@ ${extra}
       if (store.types.has(to))
         throw new UsageError(`type \`${to}\` already exists`);
       const plan = new Plan(ctx.layers);
+      plan.mechanical = true;
       retargetLinks(store, plan, (id) => id.startsWith(`${from}/`) ? `${to}${id.slice(from.length)}` : undefined);
       for (const t of store.types.values()) {
         const fields = t.schema.fields;
@@ -773,6 +806,7 @@ ${extra}
             continue;
           const path = join(dir, file);
           plan.write(join(layer.root, to, file), plan.read(path));
+          plan.inherit(join(layer.root, to, file), path);
           plan.delete(path);
         }
       }
@@ -781,10 +815,11 @@ ${extra}
   },
   mcp: {
     usage: "o6y mcp",
-    summary: "serve the stores as a local MCP server over stdio, for agents other than pi",
+    summary: "deprecated: serve the stores as a local MCP server over stdio",
     async run(ctx) {
+      ctx.err("o6y mcp is deprecated and will be removed in a future release; o6y is a pi extension.");
       const [{ serve }, { StdioServerTransport }] = await Promise.all([
-        import("./chunk-mam93y11.js"),
+        import("./chunk-qb7fxr4q.js"),
         import("@modelcontextprotocol/sdk/server/stdio.js")
       ]);
       const transport = new StdioServerTransport;
@@ -793,16 +828,50 @@ ${extra}
       return 0;
     }
   },
+  dream: {
+    usage: `o6y dream [--json]
+       o6y dream run [--here] [--limit N] [--dry-run]   (needs pi on PATH; applies without review)`,
+    summary: "show how many sessions are waiting and the last dream, or run a dream",
+    options: { ...JSON_OPT, ...DRY, here: { type: "boolean" }, limit: { type: "string" } },
+    async run(ctx, [action], o) {
+      if (action === "run")
+        return runDreamInPi(ctx, o);
+      if (action)
+        throw new UsageError("expected `o6y dream` or `o6y dream run`");
+      const { dreamStatus, formatStatus } = await import("./chunk-yawkn1gv.js");
+      const status = dreamStatus(ctx.cwd, ctx.env);
+      ctx.out(o.json ? JSON.stringify({ ...status, last: status.last ? { id: status.last.id, status: status.last.status, startedAt: status.last.startedAt, changes: status.last.changes.length, cost: status.last.cost } : null }, null, 2) : formatStatus(status));
+      return 0;
+    }
+  },
+  graph: {
+    usage: "o6y graph [--focus ID] [--out FILE] [--no-open]",
+    summary: "write the whole store as an interactive graph page and open it in your browser",
+    options: { focus: { type: "string" }, out: { type: "string" }, "no-open": { type: "boolean" } },
+    async run(ctx, _args, o) {
+      const store = ctx.load();
+      if (o.focus && !store.objects.has(o.focus))
+        throw new UsageError(`no object \`${o.focus}\``);
+      const [{ graphData, renderGraphHtml }, { cacheRoot: cacheRoot2 }] = await Promise.all([import("./chunk-h1dd4z1b.js"), import("./chunk-6v8s5pkm.js")]);
+      const path = o.out ? resolve(ctx.cwd, o.out) : join(cacheRoot2(ctx.env), "graph.html");
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, renderGraphHtml(graphData(store), o.focus), { mode: 384 });
+      ctx.out(path);
+      if (ctx.isTTY && !o["no-open"])
+        spawnSync(process.platform === "darwin" ? "open" : "xdg-open", [path], { stdio: "ignore" });
+      return 0;
+    }
+  },
   view: {
-    usage: "o6y view [id] [--activity]",
+    usage: "o6y view [id] [--activity | --dreams | --graph]",
     summary: "live terminal viewer (also: plain `o6y` in a terminal)",
-    options: { activity: { type: "boolean" } },
+    options: { activity: { type: "boolean" }, dreams: { type: "boolean" }, graph: { type: "boolean" } },
     async run(ctx, [id], o) {
       if (!ctx.isTTY)
         throw new UsageError("the viewer needs an interactive terminal");
       process.env.NODE_ENV ??= "production";
-      const { runViewer } = await import("./chunk-bg7swmpr.js");
-      await runViewer(ctx.layers, { current: id, view: o.activity ? "activity" : "browse", history: [], filter: "", open: [] });
+      const { runViewer } = await import("./chunk-axhp5yg7.js");
+      await runViewer(ctx.layers, { current: id, view: o.graph ? "graph" : o.dreams ? "dreams" : o.activity ? "activity" : "browse", history: [], filter: "", open: [] });
       return 0;
     }
   }
@@ -811,15 +880,16 @@ var GROUPS = [
   ["Read", ["query", "show", "links", "backlinks", "index", "lint", "stats", "log", "prompt", "export"]],
   ["Write (validated as one change; --dry-run previews)", ["new", "set", "mv", "merge", "rm", "field", "type", "check"]],
   ["Semantic search (opt-in: semantic.enabled in the root schema, CO_API_KEY)", ["search", "reindex", "suggestions"]],
-  ["Viewer", ["view"]],
-  ["Agents other than pi", ["mcp"]]
+  ["Dreaming", ["dream"]],
+  ["Viewer", ["view", "graph"]],
+  ["Deprecated", ["mcp"]]
 ];
 function help() {
   const lines = [
     "o6y — query and maintain o6y memory stores",
     "",
-    "Usage: o6y [--global DIR] [--project DIR] <command> [args]",
-    "Stores default to $O6Y_HOME or ~/.agents/o6y, and $O6Y_PROJECT or ./.agents/o6y."
+    "Usage: o6y [--global DIR] <command> [args]",
+    "The store defaults to $O6Y_HOME or ~/.agents/o6y."
   ];
   for (const [title, names] of GROUPS) {
     lines.push("", `${title}:`);
@@ -844,8 +914,7 @@ async function main(argv, io) {
     return value;
   };
   const globalFlag = take("--global");
-  const projectFlag = take("--project");
-  const layers = makeLayers(resolve(io.cwd, expandHome(globalFlag || io.env.O6Y_HOME || join(homedir(), ".agents", "o6y"))), resolve(io.cwd, expandHome(projectFlag || io.env.O6Y_PROJECT || join(io.cwd, ".agents", "o6y"))));
+  const layers = makeLayers(resolve(io.cwd, expandHome(globalFlag || io.env.O6Y_HOME || join(homedir(), ".agents", "o6y"))));
   const ctx = { ...io, layers, load: () => Store.load(layers) };
   let name = args.shift();
   if (!name)

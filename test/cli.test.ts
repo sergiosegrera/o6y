@@ -7,7 +7,6 @@ import { makeLayers, Store } from "../src/core/store.ts";
 
 let tmp: string;
 let g: string;
-let p: string;
 
 function put(rel: string, content: string, root = g) {
   const path = join(root, rel);
@@ -23,7 +22,7 @@ async function o6y(argv: string, stdin?: string): Promise<{ code: number; out: s
   const args = [...argv.matchAll(/(?:"[^"]*"|'[^']*'|[^\s"'])+/g)].map((m) => m[0].replace(/["']/g, ""));
   const code = await main(args, {
     cwd: tmp,
-    env: { O6Y_HOME: g, O6Y_PROJECT: p },
+    env: { O6Y_HOME: g },
     out: (t) => out.push(t),
     err: (t) => err.push(t),
     stdin: () => stdin,
@@ -32,12 +31,11 @@ async function o6y(argv: string, stdin?: string): Promise<{ code: number; out: s
   return { code, out: out.join("\n"), err: err.join("\n") };
 }
 
-const load = () => Store.load(makeLayers(g, p));
+const load = () => Store.load(makeLayers(g));
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "o6y-cli-"));
   g = join(tmp, "global");
-  p = join(tmp, "proj");
   put(".schema.md", "---\nsummaryMaxLength: 60\n---\nGuidance.\n");
   put("person/.schema.md", "---\ndescription: A person\nfields:\n  role: string\n  team: { type: link, to: team }\nindex: [role]\n---\nWho they are.\n");
   put("team/.schema.md", "---\ndescription: A team\n---\n");
@@ -125,14 +123,9 @@ describe("write commands", () => {
     expect(read("log.md")).toContain("create note/ledger-service (o6y mv)");
   });
 
-  test("mv into the project store and refusals", async () => {
-    expect((await o6y("mv note/api note/api --in project")).code).toBe(2); // already exists
+  test("mv refusals", async () => {
+    expect((await o6y("mv note/api note/api")).code).toBe(2); // already exists
     expect((await o6y("mv note/ledger note/api")).err).toContain("o6y merge");
-    // A global object can't move into the project while global objects link to it.
-    const res = await o6y("mv note/api note/payments-api --in project");
-    expect(res.code).toBe(1);
-    expect(res.out).toContain("rejected");
-    expect(existsSync(join(g, "note/api.md"))).toBe(true);
   });
 
   test("merge repoints links, keeps missing fields and appends the body", async () => {
@@ -171,8 +164,6 @@ describe("write commands", () => {
     expect(obj.data.related).toEqual(["note/api"]);
     expect(obj.body).toBe("Run by [[person/ana]].\n");
     expect((await o6y('new note/release --summary "again"')).code).toBe(2);
-    expect((await o6y('new note/p --summary "in project" --in project')).code).toBe(0);
-    expect(existsSync(join(p, "note/p.md"))).toBe(true);
     expect((await o6y('new note/toolong --summary "' + "x".repeat(70) + '"')).code).toBe(1);
 
     const rm = await o6y("rm note/api");
@@ -232,7 +223,7 @@ describe("bundle", () => {
     const root = join(import.meta.dir, "..");
     if (!existsSync(join(root, "dist", "o6y.js"))) throw new Error("run `bun run build` first");
     const proc = Bun.spawnSync([join(root, "bin", "o6y"), "query", "--type", "note", "--json"], {
-      env: { ...process.env, O6Y_HOME: g, O6Y_PROJECT: p, O6Y_NODE: "" },
+      env: { ...process.env, O6Y_HOME: g, O6Y_NODE: "" },
     });
     expect(proc.exitCode).toBe(0);
     expect(JSON.parse(proc.stdout.toString()).map((r: { id: string }) => r.id)).toEqual(["note/api", "note/ledger"]);

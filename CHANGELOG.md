@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.10.0
+
+- **Dreaming:** `/o6y-dream` consolidates past pi sessions into memory, with a per-session analyzer and an organizer, on staged copies applied as one validated change. Configure it with a `dream:` block in the root schema (`model`, `analyzerModel`, `organizerModel`, `thinking`, `maxToolResultChars`, `pageChars`, `instructions`).
+- **Managed attributes:** every write now records `created` and `updated` in an `o6y:` frontmatter block, and the session behind each change in `log.md`. o6y writes it, whichever tool made the change; `o6y` is now a reserved field name.
+- **Dreams record how facts are known:** analyzers write each claim with its evidence and any warning, and new stores' `note` and `decision` guidance asks for the same.
+- **`o6y dream`** shows how many sessions are waiting and how the last dream went, and **`o6y dream run`** runs one through a headless pi, so an agent can start it from its shell. **The viewer lists dreams** under `3` (or `d`, or `o6y view --dreams`): what each read, changed and cost, and `R` opens a dialog to pick the sessions and a cap before running one. Dreams in progress show up there and update as they go. It no longer labels the store as global.
+- **Graphs:** tab `4` in the viewer draws the selected object and its links, and `o6y graph` opens the whole store as an interactive page in your browser, with nothing fetched from the network. Search moves to `5`.
+- **Breaking: o6y has one store.** The project layer is gone from the extension, CLI and MCP server (`--o6y-project`, `--project`, `O6Y_PROJECT`, `--in`, and `in` on MCP tools). Move anything in `<repo>/.agents/o6y` into `~/.agents/o6y`, with a `location:` field to keep it ranked first in that repo.
+- **`o6y mcp` is deprecated.** o6y is a pi extension; the MCP server still works, prints a warning to stderr, and will be removed in a future release.
+
 ## 0.9.0
 
 - **MCP server for agents other than pi:** `o6y mcp` serves the stores over stdio (`claude mcp add o6y -- npx -y github:sergiosegrera/o6y mcp`). Tools: `o6y_show`, `o6y_write`, `o6y_edit` (validated before saving, logged as `mcp`), `o6y_query`, `o6y_search`, and `o6y_cli` for any other command. The memory index pi puts in its system prompt is sent as the server's instructions, with rules that point at the tools instead of file tools and bash. The server seeds an empty global store and migrates store formats on start, as a pi session does.

@@ -1,115 +1,8 @@
 #!/usr/bin/env node
 import {
   RESERVED_FIELDS,
-  classifyPath,
-  formatIssues,
-  normalizeLinkValue
-} from "./chunk-4m0nbp6g.js";
-
-// src/core/ops.ts
-function lint(store) {
-  const errors = store.issues.filter((i) => i.severity === "error");
-  const warnings = store.issues.filter((i) => i.severity === "warning");
-  const orphans = [...store.objects.values()].filter((o) => !store.backlinks.has(o.id) && o.fieldLinks.length === 0 && o.bodyLinks.length === 0);
-  const sections = [
-    `o6y lint: ${store.objects.size} objects, ${store.types.size} types — ${errors.length} errors, ${warnings.length} warnings, ${store.wanted.size} wanted, ${orphans.length} orphans`
-  ];
-  if (errors.length)
-    sections.push(`## Errors
-${formatIssues(errors, store.layers)}`);
-  if (warnings.length)
-    sections.push(`## Warnings (missing link targets, unknown link types)
-${formatIssues(warnings, store.layers)}`);
-  if (store.wanted.size) {
-    sections.push(`## Wanted pages (linked, not written)
-${[...store.wanted].map(([id, from]) => `- [[${id}]] ← ${[...from].sort().join(", ")}`).join(`
-`)}`);
-  }
-  const undeclared = [...store.objects.values()].flatMap((o) => {
-    const fields = store.types.get(o.type)?.schema.fields ?? {};
-    const extra = Object.keys(o.data).filter((k) => !RESERVED_FIELDS.includes(k) && !(k in fields));
-    return extra.length ? [`- [[${o.id}]]: ${extra.join(", ")}`] : [];
-  });
-  if (undeclared.length) {
-    sections.push(`## Undeclared fields (allowed; leftovers from a migration, or worth adding to the schema?)
-${undeclared.join(`
-`)}`);
-  }
-  if (orphans.length) {
-    sections.push(`## Orphans (no links in or out)
-${orphans.map((o) => `- [[${o.id}]] — ${o.summary}`).join(`
-`)}`);
-  }
-  return { text: sections.join(`
-
-`), errors: errors.length, warnings: warnings.length };
-}
-function matchesValue(actual, expected) {
-  if (actual === undefined || actual === null)
-    return false;
-  if (Array.isArray(actual) || typeof actual === "string" && actual.includes("[[")) {
-    const links = normalizeLinkValue(actual);
-    if (links?.includes(String(expected)))
-      return true;
-    if (Array.isArray(actual))
-      return actual.some((a) => matchesValue(a, expected));
-  }
-  return String(actual) === String(expected);
-}
-function query(store, params) {
-  let results = [...store.objects.values()];
-  if (params.type)
-    results = results.filter((o) => o.type === params.type);
-  for (const [field, expected] of Object.entries(params.where ?? {})) {
-    results = results.filter((o) => matchesValue(o.data[field], expected));
-  }
-  if (params.linksTo) {
-    const sources = store.backlinks.get(params.linksTo) ?? new Set;
-    results = results.filter((o) => sources.has(o.id));
-  }
-  if (params.linkedFrom) {
-    const source = store.objects.get(params.linkedFrom);
-    const targets = new Set([
-      ...source?.fieldLinks.map((l) => l.target) ?? [],
-      ...source?.bodyLinks.map((l) => l.target) ?? []
-    ]);
-    results = results.filter((o) => targets.has(o.id));
-  }
-  if (params.text) {
-    const needle = params.text.toLowerCase();
-    results = results.filter((o) => [o.id, o.summary, o.body].some((s) => s.toLowerCase().includes(needle)));
-  }
-  results.sort((a, b) => a.id.localeCompare(b.id));
-  return results.slice(0, params.limit ?? 50);
-}
-function outgoing(obj) {
-  const out = new Map;
-  const add = (target, via) => {
-    if (target === obj.id)
-      return;
-    const list = out.get(target) ?? [];
-    if (!list.includes(via))
-      list.push(via);
-    out.set(target, list);
-  };
-  for (const l of obj.fieldLinks)
-    add(l.target, l.field);
-  for (const l of obj.bodyLinks)
-    add(l.target, "body");
-  return out;
-}
-function neighbors(store, id) {
-  const obj = store.objects.get(id);
-  const out = obj ? [...outgoing(obj)].map(([target, via]) => ({ id: target, via, missing: !store.objects.has(target) })) : [];
-  const incoming = [];
-  for (const source of store.objects.values()) {
-    const via = outgoing(source).get(id);
-    if (via)
-      incoming.push({ id: source.id, via, missing: false });
-  }
-  const byId = (a, b) => a.id.localeCompare(b.id);
-  return { out: out.sort(byId), in: incoming.sort(byId) };
-}
+  classifyPath
+} from "./chunk-h52xt07b.js";
 
 // src/core/semantic.ts
 import { createHash } from "node:crypto";
@@ -162,10 +55,10 @@ function cohere(options) {
       }
       return out;
     },
-    async rerank(query2, documents, topN, signal) {
+    async rerank(query, documents, topN, signal) {
       if (!documents.length)
         return [];
-      const json = await post("rerank", { model: options.rerankModel, query: query2, documents, top_n: Math.min(topN, documents.length) }, signal);
+      const json = await post("rerank", { model: options.rerankModel, query, documents, top_n: Math.min(topN, documents.length) }, signal);
       const results = json?.results ?? [];
       return results.map((r) => ({ index: r.index, score: r.relevance_score }));
     }
@@ -199,7 +92,7 @@ function dot(a, b, offset) {
   return sum;
 }
 function fieldLines(obj) {
-  return Object.entries(obj.data).filter(([k]) => k !== "summary" && k !== "pinned").map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v instanceof Date ? v.toISOString().slice(0, 10) : String(v)}`);
+  return Object.entries(obj.data).filter(([k]) => !RESERVED_FIELDS.includes(k)).map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v instanceof Date ? v.toISOString().slice(0, 10) : String(v)}`);
 }
 function objectText(store, obj, max = EMBED_TEXT_MAX) {
   const description = store.types.get(obj.type)?.schema.description;
@@ -292,13 +185,13 @@ async function syncIndex(store, embedder, cache, options = {}) {
   }
   return result;
 }
-async function search(store, embedder, cache, query2, options = {}) {
+async function search(store, embedder, cache, query, options = {}) {
   const limit = options.limit ?? 10;
   const model = store.semantic.embedModel;
   const indexes = store.layers.map((l) => readIndex(indexDir(cache, l))).filter((i) => i?.model === model);
   if (!indexes.some((i) => i.ids.length))
     return [];
-  const [q] = await embedder.embed([query2], "search_query", options.signal);
+  const [q] = await embedder.embed([query], "search_query", options.signal);
   const scored = [];
   for (const index of indexes) {
     if (index.dim !== q.length)
@@ -316,10 +209,44 @@ async function search(store, embedder, cache, query2, options = {}) {
     return scored.slice(0, limit).map((s) => ({ ...s, score: s.similarity })).filter((h) => h.score >= minScore);
   }
   const candidates = scored.filter((s) => s.similarity >= store.semantic.minSimilarity).slice(0, Math.max(store.semantic.candidates, limit));
-  const ranked = await embedder.rerank(query2, candidates.map((c) => objectText(store, c.obj, RERANK_TEXT_MAX)), limit, options.signal);
+  const ranked = await embedder.rerank(query, candidates.map((c) => objectText(store, c.obj, RERANK_TEXT_MAX)), limit, options.signal);
   return ranked.map((r) => ({ ...candidates[r.index], score: r.score })).filter((h) => h.score >= minScore);
 }
+function worthSuggesting(prompt) {
+  const text = prompt.trim();
+  if (!text || text.startsWith("/"))
+    return false;
+  return text.split(/\s+/).length >= 3 || text.length >= 20;
+}
+async function relevantTo(store, embedder, cache, prompt, options = {}) {
+  const exclude = new Set(options.exclude);
+  for (const obj of store.objects.values())
+    if (obj.pinned)
+      exclude.add(obj.id);
+  return search(store, embedder, cache, prompt, {
+    limit: store.semantic.maxRelevant,
+    minScore: store.semantic.threshold,
+    exclude,
+    signal: options.signal
+  });
+}
+function formatRelevant(hits) {
+  return [
+    "<o6y-relevant>",
+    "Memory objects that look relevant to this message (score = rerank relevance, 0–1). Read the ones that apply before acting:",
+    ...hits.map((h) => `- [[${h.obj.id}]] (${h.score.toFixed(2)}) — ${h.obj.summary}`),
+    "</o6y-relevant>"
+  ].join(`
+`);
+}
 var suggestionLogPath = (cache) => join(cache, "suggestions.jsonl");
+function appendSuggestionLog(cache, record) {
+  try {
+    mkdirSync(cache, { recursive: true });
+    appendFileSync(suggestionLogPath(cache), `${JSON.stringify(record)}
+`);
+  } catch {}
+}
 function readSuggestionLog(cache) {
   let text;
   try {
@@ -370,4 +297,4 @@ function suggestionStats(records, since) {
   };
 }
 
-export { lint, query, neighbors, semanticUnavailable, embedderFor, cacheRoot, syncIndex, search, suggestionLogPath, readSuggestionLog, suggestionStats };
+export { apiKey, semanticUnavailable, cohere, embedderFor, objectText, cacheRoot, indexDir, readIndex, skippedObjects, syncIndex, search, worthSuggesting, relevantTo, formatRelevant, suggestionLogPath, appendSuggestionLog, readSuggestionLog, suggestionStats };

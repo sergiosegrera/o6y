@@ -10,7 +10,6 @@ import { makeLayers } from "../src/core/store.ts";
 
 let tmp: string;
 let g: string;
-let p: string;
 let client: Client;
 
 function put(rel: string, content: string, root = g) {
@@ -21,7 +20,7 @@ function put(rel: string, content: string, root = g) {
 const read = (rel: string, root = g) => readFileSync(join(root, rel), "utf8");
 
 async function connect(): Promise<Client> {
-  const server = createServer({ cwd: tmp, env: {}, layers: makeLayers(g, p), runCli: main });
+  const server = createServer({ cwd: tmp, env: {}, layers: makeLayers(g), runCli: main });
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
   const c = new Client({ name: "test", version: "0" });
   await Promise.all([server.connect(serverSide), c.connect(clientSide)]);
@@ -36,7 +35,6 @@ async function call(name: string, args: Record<string, unknown>): Promise<{ text
 beforeEach(async () => {
   tmp = mkdtempSync(join(tmpdir(), "o6y-mcp-"));
   g = join(tmp, "global");
-  p = join(tmp, "proj");
   put(".schema.md", "---\nsummaryMaxLength: 60\n---\nStore guidance here.\n");
   put("person/.schema.md", "---\ndescription: A person\nfields:\n  role: string\n  team: { type: link, to: team }\n---\nWho they are.\n");
   put("team/.schema.md", "---\ndescription: A team\n---\n");
@@ -106,14 +104,13 @@ describe("mcp server", () => {
     expect(long.isError).toBe(true);
   });
 
-  test("write to the project store and warnings for missing links", async () => {
-    const res = await call("o6y_write", { target: "person/cleo", in: "project", content: "---\nsummary: Contractor\nteam: team/ghost\n---\n" });
+  test("warnings for missing links", async () => {
+    const res = await call("o6y_write", { target: "person/cleo", content: "---\nsummary: Contractor\nteam: team/ghost\n---\n" });
     expect(res.isError).toBe(false);
     expect(res.text).toContain("warnings");
-    expect(read("person/cleo.md", p)).toContain("Contractor");
-    // An id that exists resolves to its layer without `in`.
+    expect(read("person/cleo.md")).toContain("Contractor");
     expect((await call("o6y_edit", { target: "person/cleo", old_string: "Contractor", new_string: "Contract dev" })).isError).toBe(false);
-    expect(read("person/cleo.md", p)).toContain("Contract dev");
+    expect(read("person/cleo.md")).toContain("Contract dev");
   });
 
   test("schema changes that break objects are rejected", async () => {

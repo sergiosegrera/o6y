@@ -45,7 +45,7 @@ export const DEFAULT_SETTINGS: RootSettings = {
   namesBudget: 10000,
 };
 
-export const RESERVED_FIELDS = ["summary", "pinned"];
+export const RESERVED_FIELDS = ["summary", "pinned", "o6y"];
 
 /** Semantic search (Cohere embeddings + rerank). Opt-in: sends objects and prompts to Cohere. */
 export interface SemanticSettings {
@@ -75,9 +75,76 @@ export const DEFAULT_SEMANTIC: SemanticSettings = {
   logPrompts: false,
 };
 
+/** Dreaming: consolidating past pi sessions into memory (`/o6y-dream`). */
+export interface DreamSettings {
+  /** `provider/model-id` for both dream agents; empty means the model of the pi session. */
+  model: string;
+  /** Overrides `model` for the per-session analyzers. */
+  analyzerModel: string;
+  /** Overrides `model` for the organizer. */
+  organizerModel: string;
+  /** off, minimal, low, medium, high, xhigh or max; empty means the pi session's level. */
+  thinking: string;
+  /** Tool calls and results in a transcript are trimmed to this many characters. */
+  maxToolResultChars: number;
+  /** Characters per transcript page an analyzer reads at a time. */
+  pageChars: number;
+  /** Extra guidance given to both agents. */
+  instructions: string;
+}
+
+export const DEFAULT_DREAM: DreamSettings = {
+  model: "",
+  analyzerModel: "",
+  organizerModel: "",
+  thinking: "",
+  maxToolResultChars: 3000,
+  pageChars: 30000,
+  instructions: "",
+};
+
+const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+
+function parseDream(raw: unknown, errors: string[]): Partial<DreamSettings> {
+  if (raw === undefined) return {};
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    errors.push("`dream` must be a mapping, e.g. { model: openrouter/some-model }");
+    return {};
+  }
+  const out: Partial<DreamSettings> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const where = `\`dream.${key}\``;
+    switch (key) {
+      case "model":
+      case "analyzerModel":
+      case "organizerModel":
+        if (typeof value === "string" && (value === "" || /^[^/\s]+\/\S+$/.test(value))) out[key] = value;
+        else errors.push(`${where} must be provider/model-id`);
+        break;
+      case "thinking":
+        if (typeof value === "string" && (value === "" || THINKING_LEVELS.includes(value))) out[key] = value;
+        else errors.push(`${where} must be one of: ${THINKING_LEVELS.join(", ")}`);
+        break;
+      case "maxToolResultChars":
+      case "pageChars":
+        if (typeof value === "number" && Number.isInteger(value) && value > 0) out[key] = value;
+        else errors.push(`${where} must be a positive integer`);
+        break;
+      case "instructions":
+        if (typeof value === "string") out[key] = value.trim();
+        else errors.push(`${where} must be text`);
+        break;
+      default:
+        errors.push(`${where} is not a setting (allowed: ${Object.keys(DEFAULT_DREAM).join(", ")})`);
+    }
+  }
+  return out;
+}
+
 export interface RootSchema {
   settings: Partial<RootSettings>;
   semantic: Partial<SemanticSettings>;
+  dream: Partial<DreamSettings>;
   guidance: string;
 }
 
@@ -138,8 +205,9 @@ export function parseRootSchema(text: string): { schema?: RootSchema; errors: st
     errors.push("`o6yFormat` is the store format version managed by o6y; leave it as a positive integer");
   }
   const semantic = parseSemantic(data.semantic, errors);
+  const dream = parseDream(data.dream, errors);
   if (errors.length) return { errors };
-  return { schema: { settings, semantic, guidance: doc.body.trim() }, errors };
+  return { schema: { settings, semantic, dream, guidance: doc.body.trim() }, errors };
 }
 
 export function parseTypeSchema(text: string): { schema?: TypeSchema; errors: string[] } {

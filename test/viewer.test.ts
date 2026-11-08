@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { makeLayers, Store } from "../src/core/store.ts";
+import { costPerSession, dreamFormFlags, dreamFormLines, newDreamForm, updateDreamForm } from "../src/viewer/dreamForm.ts";
 import {
   activityLine,
   activityRows,
@@ -201,4 +202,31 @@ test("search lines dim results under the threshold", () => {
 test("wrap and joinParagraphs", () => {
   expect(wrap("- one two three four", 10)).toEqual(["- one two", "  three", "  four"]);
   expect(joinParagraphs(["a", "b", "", "- x", "  y", "```", "c", "d", "```"])).toEqual(["a b", "", "- x y", "```", "c", "d", "```"]);
+});
+
+test("the dream dialog starts capped and turns its choices into flags", () => {
+  let f = newDreamForm(44, 3);
+  expect(f.cap).toBe(5);
+  expect(dreamFormFlags(f)).toEqual(["--limit", "5"]);
+  f = updateDreamForm(updateDreamForm(f, "1"), "2");
+  expect(f.cap).toBe(12);
+  f = updateDreamForm(f, "9");
+  expect(f.cap).toBe(44);
+  expect(dreamFormFlags(f)).toEqual([]);
+  f = updateDreamForm(updateDreamForm(f, "up"), "right");
+  expect(f.scope).toBe("here");
+  expect(f.cap).toBe(3);
+  expect(dreamFormFlags(f)).toEqual(["--here"]);
+  f = updateDreamForm(updateDreamForm(f, "down"), "left");
+  expect(dreamFormFlags(f)).toEqual(["--here", "--limit", "2"]);
+  for (const _ of [1, 2, 3]) f = updateDreamForm(f, "left");
+  expect(f.cap).toBe(1);
+});
+
+test("the dream dialog can't switch to an empty scope, and hides what is behind it", () => {
+  const f = updateDreamForm(updateDreamForm(newDreamForm(4, 0), "up"), "right");
+  expect(f.scope).toBe("all");
+  for (const line of dreamFormLines(f, { model: "some/model", perSession: 0.5 }, 50)) expect(plain(line).length).toBe(50);
+  expect(dreamFormLines(f, { model: "m", perSession: 0.5 }, 50).map(plain).join("\n")).toContain("About $2.00");
+  expect(costPerSession([{ cost: 1, sessions: [{ ok: true }, { ok: true }, { ok: false }] }, { cost: 0, sessions: [{ ok: true }] }])).toBe(0.5);
 });

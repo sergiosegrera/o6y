@@ -116,15 +116,18 @@ export function describe(layers: Layer[], path: string): string {
   }
 }
 
+/** A log.md line: time, action, target, what made the change, and the sessions behind it. */
+export const LOG_LINE = /^- (\S+) (create|update|delete) (.+) \((.+)\)(?: \[([^\]]+)\])?$/;
+
 /** Appends one line per change to the log.md of the layer containing each path. */
-export function appendLog(layers: Layer[], entries: { action: LogAction; path: string }[], via: string, now = new Date()): void {
+export function appendLog(layers: Layer[], entries: { action: LogAction; path: string; source?: string }[], via: string, now = new Date()): void {
   const stamp = now.toISOString().replace(/\.\d{3}Z$/, "Z");
   const byLayer = new Map<Layer, string[]>();
-  for (const { action, path } of entries) {
+  for (const { action, path, source } of entries) {
     const info = classifyPath(layers, path);
     if (!info || info.kind === "log") continue;
     if (!byLayer.has(info.layer)) byLayer.set(info.layer, []);
-    byLayer.get(info.layer)!.push(`- ${stamp} ${action} ${describe(layers, path)} (${via})`);
+    byLayer.get(info.layer)!.push(`- ${stamp} ${action} ${describe(layers, path)} (${via})${source ? ` [${source}]` : ""}`);
   }
   for (const [layer, lines] of byLayer) {
     const logPath = join(layer.root, LOG_FILE);
@@ -179,10 +182,12 @@ description: Any other durable knowledge — how a system works, a convention, a
 fields:
   tags: list
   related: { type: link, many: true }
+  location: { type: string, description: "the repo or directory this applies to, if only one" }
 index: [tags]
 ---
 One topic per note, with a specific summary. Tag it (e.g. system, practice, gotcha) so related
-notes are easy to find, and link what it is about.
+notes are easy to find, and link what it is about. For each claim, say how it is known (ran it,
+someone stated it, inferred) and when it could stop being true.
 `,
   [`decision/${SCHEMA_FILE}`]: `---
 description: A choice that was made and should not be silently relitigated
@@ -191,7 +196,8 @@ fields:
   status: string
 index: [date]
 ---
-Context, what was decided, and the consequences. If it replaces an earlier decision, link that one.
+Context, what was decided and who decided it, the evidence it rested on, and the consequences.
+If it replaces an earlier decision, link that one.
 `,
 };
 

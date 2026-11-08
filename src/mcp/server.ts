@@ -69,14 +69,12 @@ type Target = { kind: "manual" } | { kind: "path"; path: string; info: PathInfo 
 
 /**
  * What a tool's `target` names: `manual`, an object id (`note/ledger`), a schema (`note/.schema`,
- * `.schema`), an index (`index`, `note/index`), or a path inside a store. Ids resolve to the layer
- * that has them, else to `in` (default global).
+ * `.schema`), an index (`index`, `note/index`), or a path inside the store.
  */
-function resolveTarget(store: Store, layers: Layer[], cwd: string, target: string, layerName?: string): Target | string {
+function resolveTarget(store: Store, layers: Layer[], cwd: string, target: string): Target | string {
   const t = target.trim();
   if (t === "manual") return { kind: "manual" };
-  const layer = layerName ? layers.find((l) => l.name === layerName) : layers[0];
-  if (!layer) return `\`in\` must be one of: ${layers.map((l) => l.name).join(", ")}`;
+  const layer = layers[0]!;
   let path: string;
   if (t.startsWith("/") || t.startsWith("~") || t.startsWith(".")) {
     if (t === SCHEMA_FILE.replace(/\.md$/, "")) path = join(layer.root, SCHEMA_FILE);
@@ -86,13 +84,10 @@ function resolveTarget(store: Store, layers: Layer[], cwd: string, target: strin
     const [type, rest] = t.split("/", 2);
     if (!type || rest === undefined) return `\`${t}\` is not a target; use type/slug, type/.schema, .schema, index, type/index, manual or a store path`;
     if (rest === ".schema" || rest === "index") {
-      const existing = store.types.get(type);
-      const root = layerName || !existing ? layer.root : existing.layer.root;
-      path = join(root, type, rest === "index" ? INDEX_FILE : SCHEMA_FILE);
+      path = join(layer.root, type, rest === "index" ? INDEX_FILE : SCHEMA_FILE);
     } else {
       if (!parseId(t)) return `\`${t}\` is not a valid id; use type/slug in kebab-case, e.g. note/release-train`;
-      const existing = store.objects.get(t);
-      path = existing && !layerName ? existing.path : join(layer.root, type, `${rest}.md`);
+      path = join(layer.root, type, `${rest}.md`);
     }
   }
   path = canonicalPath(path);
@@ -137,7 +132,6 @@ function managedReason(info: PathInfo): string | undefined {
   return undefined;
 }
 
-const IN = z.enum(["global", "project"]).optional().describe("Store for a new object or schema (default: where it already is, else global)");
 const TARGET = z
   .string()
   .describe("An object id (type/slug), a schema (type/.schema, or .schema for the store root), or a path inside a store");
@@ -149,7 +143,7 @@ export function createServer(opts: ServerOptions): McpServer {
   const instructions = [renderPromptSection(load(), { workPaths: workPaths(cwd), mcp: true }), ...notes.map((n) => `Note: ${n}`)].join("\n\n");
 
   const server = new McpServer({ name: "o6y", version: packageVersion() }, { instructions });
-  const cliEnv = { ...env, O6Y_HOME: layers[0]!.root, O6Y_PROJECT: (layers[1] ?? layers[0]!).root };
+  const cliEnv = { ...env, O6Y_HOME: layers[0]!.root };
 
   /** Runs an `o6y` command in-process; exit 1 (rejected) and 2 (usage) are tool errors. */
   async function cli(argv: string[], { errorOnReject = true } = {}): Promise<ToolResult> {
@@ -226,12 +220,12 @@ export function createServer(opts: ServerOptions): McpServer {
       title: "Read memory",
       description:
         "Read from o6y memory. target: an object id (type/slug; shown with its backlinks), a schema (type/.schema, or .schema for the store root), `index` (the full catalog), `type/index` (one type with its fields, guidance and every object), `manual` (the full o6y manual), or any path inside a store.",
-      inputSchema: { target: z.string().describe("type/slug, type/.schema, .schema, index, type/index, manual, or a store path"), in: IN },
+      inputSchema: { target: z.string().describe("type/slug, type/.schema, .schema, index, type/index, manual, or a store path") },
       annotations: { readOnlyHint: true },
     },
     async (a) => {
       const store = load();
-      const t = resolveTarget(store, layers, cwd, a.target, a.in);
+      const t = resolveTarget(store, layers, cwd, a.target);
       if (typeof t === "string") return fail(t);
       if (t.kind === "manual") return ok(readFileSync(SKILL_PATH, "utf8"));
       const { info, path } = t;
@@ -258,11 +252,11 @@ export function createServer(opts: ServerOptions): McpServer {
       title: "Write memory",
       description:
         "Create or replace an o6y object or schema with the full file content (YAML frontmatter + markdown body). The change is validated against the schemas before anything is saved; a rejected write changes nothing. For a small change to an existing file, o6y_edit is safer.",
-      inputSchema: { target: TARGET, content: z.string().describe("The whole file: ---\\nsummary: ...\\n---\\nbody"), in: IN },
+      inputSchema: { target: TARGET, content: z.string().describe("The whole file: ---\\nsummary: ...\\n---\\nbody") },
       annotations: { destructiveHint: true, idempotentHint: true },
     },
     async (a) => {
-      const t = resolveTarget(load(), layers, cwd, a.target, a.in);
+      const t = resolveTarget(load(), layers, cwd, a.target);
       if (typeof t === "string") return fail(t);
       if (t.kind === "manual") return fail("The manual is part of o6y; it cannot be written.");
       const managed = managedReason(t.info);
@@ -282,12 +276,11 @@ export function createServer(opts: ServerOptions): McpServer {
         old_string: z.string().min(1).describe("Exact text to replace, including whitespace"),
         new_string: z.string(),
         replace_all: z.boolean().optional(),
-        in: IN,
       },
       annotations: { destructiveHint: true },
     },
     async (a) => {
-      const t = resolveTarget(load(), layers, cwd, a.target, a.in);
+      const t = resolveTarget(load(), layers, cwd, a.target);
       if (typeof t === "string") return fail(t);
       if (t.kind === "manual") return fail("The manual is part of o6y; it cannot be edited.");
       const managed = managedReason(t.info);

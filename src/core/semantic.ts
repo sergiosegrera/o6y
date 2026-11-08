@@ -3,6 +3,7 @@
  * them against the query. Vectors live in a flat per-layer cache outside the store (it can always
  * be rebuilt from the markdown), searched by brute force: a store is thousands of objects at most.
  */
+import { RESERVED_FIELDS } from "./schema.ts";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -113,7 +114,7 @@ function dot(a: Float32Array, b: Float32Array, offset: number): number {
 
 function fieldLines(obj: ObjectEntry): string[] {
   return Object.entries(obj.data)
-    .filter(([k]) => k !== "summary" && k !== "pinned")
+    .filter(([k]) => !RESERVED_FIELDS.includes(k))
     .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(", ") : v instanceof Date ? v.toISOString().slice(0, 10) : String(v)}`);
 }
 

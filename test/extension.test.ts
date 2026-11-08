@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import o6y from "../src/extension.ts";
@@ -50,7 +50,7 @@ beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "o6y-ext-"));
   g = join(tmp, "global");
   cache = join(tmp, "cache");
-  Object.assign(process.env, { O6Y_HOME: g, O6Y_PROJECT: join(tmp, "proj"), O6Y_CACHE: cache, CO_API_KEY: "test-key" });
+  Object.assign(process.env, { O6Y_HOME: g, O6Y_CACHE: cache, CO_API_KEY: "test-key" });
   globalThis.fetch = fakeCohere().fetch;
   put(".schema.md", "---\nsemantic: { enabled: true, threshold: 0.5 }\n---\n");
   put("person/.schema.md", "---\ndescription: A person\n---\n");
@@ -108,4 +108,17 @@ test("prompts are logged only with logPrompts", async () => {
   await indexed();
   await prompt("who reviews ledger migrations");
   expect(readSuggestionLog(cache)[0]).toMatchObject({ type: "suggest", prompt: "who reviews ledger migrations" });
+});
+
+test("a direct write gets its managed attributes from the session", async () => {
+  const { handlers, ctx } = start();
+  await handlers.session_start!({}, ctx);
+  const path = join(g, "note/direct.md");
+  const content = "---\nsummary: Written by pi\no6y:\n  created: 1999-01-01\n---\nBody\n";
+  await handlers.tool_call!({ toolName: "write", input: { path, content }, toolCallId: "w" }, ctx);
+  writeFileSync(path, content); // what pi's write tool does between the hooks
+  await handlers.tool_result!({ toolName: "write", input: { path, content }, toolCallId: "w", content: [], isError: false }, ctx);
+  const written = readFileSync(path, "utf8");
+  expect(written).not.toContain("1999");
+  expect(readFileSync(join(g, "log.md"), "utf8")).toContain("create note/direct (write) [pi:session-1]");
 });

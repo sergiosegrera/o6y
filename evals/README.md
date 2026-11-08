@@ -44,7 +44,6 @@ Models are nondeterministic. One trial is fine for spotting regressions; use `--
 | pin-request | acme | "every session must know X" becomes a pinned object |
 | schema-migration | acme | a field rename (`person.role` → `title`, including `index:`) ends valid |
 | new-type | acme | knowledge that fits no type gets a new schema and objects |
-| project-vs-global | acme | repo-specific knowledge lands in the project store |
 | rename-object | acme | an object is renamed and every link follows it (and whether `o6y mv` was used) |
 | merge-duplicates | acme + duplicate | a duplicate is folded in: facts kept, links repointed, duplicate deleted |
 
@@ -58,7 +57,7 @@ import { answerMatches, defineCase, hasObject, lintClean } from "../lib.ts";
 export default defineCase({
   name: "my-case",
   description: "What behaviour this protects.",
-  fixture: "acme",                      // evals/fixtures/acme/{global,project}; omit for an empty store
+  fixture: "acme",                      // evals/fixtures/acme/global; omit for an empty store
   files: { "global/person/x.md": "…" }, // optional extra files on top of the fixture
   steps: ["first session prompt", "second session prompt"],
   checks: [hasObject({ type: "person", text: [/x/i] }), lintClean(), answerMatches([/y/i])],

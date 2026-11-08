@@ -24,8 +24,8 @@ export interface Run {
 export interface CheckContext {
   store: Store;
   runs: Run[];
-  /** Root of the project store (relative paths in checks are not needed; ids are). */
-  roots: { global: string; project: string };
+  /** Root of the store (relative paths in checks are not needed; ids are). */
+  roots: { global: string };
 }
 
 export interface Check {
@@ -39,7 +39,7 @@ export interface EvalCase {
   description: string;
   /** Fixture under evals/fixtures/<name>; omitted = empty store (o6y seeds starter schemas). */
   fixture?: string;
-  /** Files added on top of the fixture, keyed by `global/...` or `project/...`. */
+  /** Files added on top of the fixture, keyed by `global/...`. */
   files?: Record<string, string>;
   /** Each prompt is a separate pi session, run in order against the same stores. */
   steps: string[];
@@ -53,7 +53,7 @@ export const defineCase = (c: EvalCase) => c;
 export interface ObjectMatch {
   type?: string;
   id?: string;
-  layer?: "global" | "project";
+  layer?: "global";
   /** Field predicates or exact values. */
   where?: Record<string, string | number | boolean | ((value: unknown) => boolean)>;
   /** Patterns that must all appear in the summary + body. */

@@ -3,7 +3,9 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { parseDoc } from "./frontmatter.ts";
 import { type BodyLink, extractBodyLinks, NAME_RE, parseId } from "./links.ts";
 import {
+  DEFAULT_DREAM,
   DEFAULT_SEMANTIC,
+  type DreamSettings,
   DEFAULT_SETTINGS,
   parseRootSchema,
   parseTypeSchema,
@@ -183,6 +185,7 @@ export class Store {
   readonly layers: Layer[];
   readonly settings: RootSettings;
   readonly semantic: SemanticSettings;
+  readonly dream: DreamSettings;
   readonly rootGuidance = new Map<LayerName, string>();
   readonly types = new Map<string, TypeEntry>();
   readonly objects = new Map<string, ObjectEntry>();
@@ -197,6 +200,7 @@ export class Store {
     const filesByLayer = layers.map((layer) => ({ layer, files: readLayerFiles(layer, overlay) }));
     const settings = { ...DEFAULT_SETTINGS };
     const semantic = { ...DEFAULT_SEMANTIC };
+    const dream = { ...DEFAULT_DREAM };
 
     // Pass 1: root schemas (project settings override global) and type schemas.
     const pendingTypes: { layer: Layer; type: string; file: RawFile }[] = [];
@@ -212,6 +216,7 @@ export class Store {
             if (schema) {
               Object.assign(settings, schema.settings);
               Object.assign(semantic, schema.semantic);
+              Object.assign(dream, schema.dream);
               if (schema.guidance) this.rootGuidance.set(layer.name, schema.guidance);
             }
             break;
@@ -236,6 +241,7 @@ export class Store {
     }
     this.settings = settings;
     this.semantic = semantic;
+    this.dream = dream;
 
     for (const { layer, type, file } of pendingTypes) {
       const existing = this.types.get(type);

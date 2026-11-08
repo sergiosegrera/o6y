@@ -1,6 +1,6 @@
 ---
 name: o6y
-description: Full manual for the o6y memory store (typed markdown wiki) — schema syntax, field types, links, global vs project stores, validation rules, migrations and recipes. Load before creating or changing a type schema, restructuring or migrating memory, or when an o6y write is rejected and the reason is unclear.
+description: Full manual for the o6y memory store (typed markdown wiki) — schema syntax, field types, links, validation rules, migrations and recipes. Load before creating or changing a type schema, restructuring or migrating memory, or when an o6y write is rejected and the reason is unclear.
 ---
 
 # o6y manual
@@ -55,7 +55,7 @@ and it is shown in the type's index.md.
 | `link` | `type/slug`. Options: `to` (a type, a list of types, or `any`, the default) and `many: true` for a list |
 
 Field options: `required`, `description`, plus `values` for enums and `to` / `many` for links.
-`summary` and `pinned` are reserved and implicit in every type, so don't declare them.
+`summary` and `pinned` are reserved and implicit in every type, so don't declare them. The `o6y:` block (`created`, `updated`) is maintained automatically: don't write or edit it, because anything you put there is replaced. Use it to judge how fresh an object is.
 
 Use `alwaysList: true` for types whose summaries should always be in front of you (the starter `preference` type has it). They get up to 35% of the prompt budget, so keep such types small.
 
@@ -73,7 +73,7 @@ pinnedBudget: 2500     # max chars (summary + body) of all pinned objects combin
 Guidance for the whole store (shown in the system prompt).
 ```
 
-The project store's settings override the global store's. An optional `semantic:` block turns on semantic search (see the `o6y` command); only the user should turn it on, since it sends the store and their messages to Cohere.
+An optional `semantic:` block turns on semantic search (see the `o6y` command); only the user should turn it on, since it sends the store and their messages to Cohere.
 
 ## Objects
 
@@ -109,18 +109,12 @@ it for store-wide guidance, and pinned objects for specific facts.
 | Body link to a type that has no schema yet | warning; listed as a wanted page |
 | Malformed link (`[[Some Page]]`, not `type/slug`) | **error** |
 | Typed field points to a type not in `to` | **error** |
-| Global object links to a project object or type | **error** |
 
 Warnings never block a write. They are appended to the tool result, so resolve them when it makes sense, usually by writing the missing object.
 
-## Global vs project stores
+## One store
 
-- **global** (default `~/.agents/o6y`) holds knowledge useful across repos: people, teams, shared
-  systems and company-wide practices.
-- **project** (default `<repo>/.agents/o6y`) holds knowledge specific to this repo.
-- Types share one namespace. A project can add types and use global types, but it can't redefine a global type.
-- Object ids (`type/slug`) are unique across both stores.
-- Links go one way: project → global. Global objects can't link into a project.
+There is one store (default `~/.agents/o6y`), shared across every repo, because memory gets more useful the more context it holds. When something applies to one repo only, name the repo and add a path field (`location: ~/Projects/north`) so it ranks first when working there.
 
 ## Validation
 
@@ -141,7 +135,7 @@ Warnings never block a write. They are appended to the tool result, so resolve t
 - `o6y field rename person role title`. This also updates `index:`.
 - `o6y field drop system legacy-id`. Use `--keep-values` to drop it from the schema only.
 
-**Rename or move an object:** `o6y mv system/old-name system/new-name` rewrites every link to it, in bodies (keeping `|label` and `#heading`) and in typed fields. Add `--in project` to move it into the project store.
+**Rename or move an object:** `o6y mv system/old-name system/new-name` rewrites every link to it, in bodies (keeping `|label` and `#heading`) and in typed fields.
 
 **Merge duplicates:** `o6y merge note/dup note/original`. The original keeps its own fields and gains the ones it lacked, the duplicate's body is appended under `## Merged from …`, links are repointed and the duplicate is deleted. Then tidy the merged body.
 
@@ -163,7 +157,8 @@ Run it with bash. Every write command validates the whole change before writing 
 | `o6y stats` · `o6y log [--since 2d]` | counts and budgets; recent changes |
 | `o6y prompt [--stats]` | the memory section of your system prompt, or where its budget goes |
 | `o6y export [--format json\|mermaid\|dot]` | dump the store or its link graph |
-| `o6y new <id> --summary S [--set f=v]… [--body B] [--in project]` | create an object |
+| `o6y dream` / `o6y dream run [--here] [--limit N] [--dry-run]` | show waiting sessions and the last dream / run a dream. Only run one when the user asks: it sends past transcripts to the model, costs money, takes minutes and applies without review. Use a long command timeout |
+| `o6y new <id> --summary S [--set f=v]… [--body B]` | create an object |
 | `o6y set <id> f=v… [--unset f]` | set fields (values are YAML: `true`, `3`, `[a, b]`) |
 | `o6y mv` · `o6y merge` · `o6y rm` · `o6y field` · `o6y type rename` | see Recipes |
 | `o6y check <id\|path> [--file F]` | validate a draft (stdin or file) without writing it |

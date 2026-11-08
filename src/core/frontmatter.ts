@@ -28,3 +28,15 @@ export function parseDoc(text: string): ParsedDoc {
     return { data: undefined, body, error: `invalid YAML frontmatter: ${message}` };
   }
 }
+
+/** Splits a document into raw frontmatter (without fences) and body. */
+export function splitDoc(text: string): { frontmatter: string | undefined; body: string } {
+  const match = FENCE.exec(text);
+  if (!match) return { frontmatter: undefined, body: text };
+  return { frontmatter: match[1] ?? "", body: text.slice(match[0].length) };
+}
+
+export function joinDoc(frontmatter: string, body: string): string {
+  const fm = frontmatter.endsWith("\n") ? frontmatter : `${frontmatter}\n`;
+  return `---\n${fm}---\n${body}`;
+}
