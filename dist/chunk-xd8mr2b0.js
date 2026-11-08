@@ -12,9 +12,10 @@ function packageRoot() {
 }
 function dreamInvocation(storeRoot, flags, env) {
   const caller = env.O6Y_SOURCE?.replace(/^pi:/, "");
+  const entry = join(packageRoot(), "index.ts");
   return {
-    args: ["-p", "--no-session", "-ne", "-e", join(packageRoot(), "index.ts"), "--o6y-global", storeRoot, ["/o6y-dream", ...flags].join(" ")],
-    env: { ...process.env, ...env, ...caller ? { O6Y_DREAM_EXCLUDE: caller } : {} }
+    args: ["-p", "--no-session", "-e", entry, "--o6y-global", storeRoot, ["/o6y-dream", ...flags].join(" ")],
+    env: { ...process.env, ...env, O6Y_EXTENSION: entry, ...caller ? { O6Y_DREAM_EXCLUDE: caller } : {} }
   };
 }
 

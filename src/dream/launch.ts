@@ -13,8 +13,10 @@ function packageRoot(): string {
 /** Arguments and environment for `pi`. Called from inside a pi session, that session is left for a later dream. */
 export function dreamInvocation(storeRoot: string, flags: string[], env: Record<string, string | undefined>): { args: string[]; env: Record<string, string | undefined> } {
   const caller = env.O6Y_SOURCE?.replace(/^pi:/, "");
+  const entry = join(packageRoot(), "index.ts");
   return {
-    args: ["-p", "--no-session", "-ne", "-e", join(packageRoot(), "index.ts"), "--o6y-global", storeRoot, ["/o6y-dream", ...flags].join(" ")],
-    env: { ...process.env, ...env, ...(caller ? { O6Y_DREAM_EXCLUDE: caller } : {}) },
+    // The user's extensions load so their model providers exist; the dream's own agents still get none.
+    args: ["-p", "--no-session", "-e", entry, "--o6y-global", storeRoot, ["/o6y-dream", ...flags].join(" ")],
+    env: { ...process.env, ...env, O6Y_EXTENSION: entry, ...(caller ? { O6Y_DREAM_EXCLUDE: caller } : {}) },
   };
 }

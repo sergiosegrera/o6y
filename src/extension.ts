@@ -112,7 +112,19 @@ type Pending =
  * o6y never replaces pi's tools. It hooks `tool_call`/`tool_result` for read, write, edit and bash,
  * so it composes with other extensions, including ones that provide their own implementations.
  */
+/** Background work can outlive its session, and pi then throws on any use of the old context. */
+function showStatus(ctx: ExtensionContext, key: string, text: string | undefined): void {
+  try {
+    if (ctx.hasUI) ctx.ui.setStatus(key, text);
+  } catch {}
+}
+
 export default function o6y(pi: ExtensionAPI) {
+  // A dream launched by the CLI names its own copy, so an installed copy at another path doesn't
+  // collide with it over the --o6y-global flag.
+  const only = process.env.O6Y_EXTENSION;
+  if (only && canonicalPath(only) !== canonicalPath(fileURLToPath(new URL("../index.ts", import.meta.url)))) return;
+
   // The manual is a skill so only its description costs prompt space; loaded on demand.
   pi.on("resources_discover", () => ({ skillPaths: [SKILL_PATH] }));
 
@@ -164,14 +176,14 @@ export default function o6y(pi: ExtensionAPI) {
     const embedder = embedderFor(store, process.env);
     if (!embedder || indexing || promptSignature === indexedSignature) return;
     const signature = promptSignature;
-    if (ctx.hasUI) ctx.ui.setStatus("o6y", "o6y: indexing memory…");
+    showStatus(ctx, "o6y", "o6y: indexing memory…");
     indexing = syncIndex(store, embedder, cacheRoot(process.env))
       .then(() => {
         indexedSignature = signature;
-        if (ctx.hasUI) ctx.ui.setStatus("o6y", undefined);
+        showStatus(ctx, "o6y", undefined);
       })
       .catch((err) => {
-        if (ctx.hasUI) ctx.ui.setStatus("o6y", `o6y: search index not updated (${err instanceof Error ? err.message : err})`);
+        showStatus(ctx, "o6y", `o6y: search index not updated (${err instanceof Error ? err.message : err})`);
       })
       .finally(() => {
         indexing = undefined;
@@ -424,7 +436,12 @@ export default function o6y(pi: ExtensionAPI) {
       const words = args.trim().split(/\s+/).filter(Boolean);
       const limitAt = words.indexOf("--limit");
       const limit = limitAt >= 0 ? Number(words[limitAt + 1]) : undefined;
-      const report = (text: string, level: "info" | "warning") => (ctx.hasUI ? ctx.ui.notify(text, level) : console.log(text));
+      const report = (text: string, level: "info" | "warning") => {
+        try {
+          if (ctx.hasUI) return ctx.ui.notify(text, level);
+        } catch {} // the session ended; there is no UI left to tell
+        console.log(text);
+      };
       if (limit !== undefined && (!Number.isInteger(limit) || limit <= 0)) return report("o6y dream: --limit needs a positive integer", "warning");
       const { parseSince } = await import("./dream/status.ts");
       const sinceAt = words.indexOf("--since");
@@ -452,7 +469,7 @@ export default function o6y(pi: ExtensionAPI) {
           settings: load().dream,
           agent: sdkAgent(ctx, pi.getThinkingLevel()),
           signal: dreaming.signal,
-          progress: (text) => ctx.hasUI && ctx.ui.setStatus("o6y-dream", `o6y ${text}`),
+          progress: (text) => showStatus(ctx, "o6y-dream", `o6y ${text}`),
         });
         report(formatRun(run), run.status === "done" || run.status === "nothing" || run.status === "dry-run" ? "info" : "warning");
         refreshPrompt();
@@ -460,7 +477,7 @@ export default function o6y(pi: ExtensionAPI) {
         report(`o6y dream failed: ${err instanceof Error ? err.message : err}`, "warning");
       } finally {
         dreaming = undefined;
-        if (ctx.hasUI) ctx.ui.setStatus("o6y-dream", undefined);
+        showStatus(ctx, "o6y-dream", undefined);
       }
     },
   });

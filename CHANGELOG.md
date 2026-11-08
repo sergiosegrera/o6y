@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.10.6
+
+- Fixed a crash when pi exited while the search index was still syncing in the background, seen after `o6y dream run --dry-run`.
+- `o6y dream run` loads your pi extensions and MCP setup, so `dream.model` and `enabledModels` can use models from extension providers. The dream's own agents still get only their store and transcript tools.
+
 ## 0.10.5
 
 - `o6y dream run --session ID` reads specific sessions again in full, even if a dream already processed them. It takes a full id or unique prefix, and can be repeated or comma-separated.

@@ -4,6 +4,7 @@ import {
   createAgentSession,
   createExtensionRuntime,
   type ExtensionContext,
+  type ModelRuntime,
   type ResourceLoader,
   SessionManager,
   SettingsManager,
@@ -46,6 +47,8 @@ export function sdkAgent(ctx: Pick<ExtensionContext, "model" | "modelRegistry" |
     const { session } = await createAgentSession({
       cwd: ctx.cwd,
       model: resolveModel(model, ctx),
+      // Shared so models from extension providers keep working. pi has no public accessor; without it the default runtime is used.
+      modelRuntime: (ctx.modelRegistry as unknown as { runtime?: ModelRuntime }).runtime,
       thinkingLevel: (thinking || sessionThinking) as never,
       noTools: "builtin",
       customTools: tools,

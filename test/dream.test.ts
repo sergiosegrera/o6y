@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
+import { dreamInvocation } from "../src/dream/launch.ts";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -358,4 +359,10 @@ test("a large dream's page leads with totals and folds sessions that found nothi
   expect(folded.some((l) => l.includes("100 /work/a"))).toBe(true);
   expect(text(false).sections!.map((i) => folded[i])).toContain("Found nothing (200)");
   expect(text(true).lines.length).toBeGreaterThan(200);
+});
+
+test("a CLI dream loads the user's extensions and names its own o6y copy", () => {
+  const { args, env: launched } = dreamInvocation("/store", ["--dry-run"], {});
+  expect(args).not.toContain("-ne");
+  expect(args[args.indexOf("-e") + 1]).toBe(launched.O6Y_EXTENSION!);
 });

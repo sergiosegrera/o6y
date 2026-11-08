@@ -122,3 +122,18 @@ test("a direct write gets its managed attributes from the session", async () => 
   expect(written).not.toContain("1999");
   expect(readFileSync(join(g, "log.md"), "utf8")).toContain("create note/direct (write) [pi:session-1]");
 });
+
+test("a background index sync survives its session ending", async () => {
+  const { ctx, prompt } = start();
+  let stale = false;
+  Object.defineProperty(ctx, "hasUI", { get: () => { if (stale) throw new Error("This extension ctx is stale"); return true; } });
+  const crashes: unknown[] = [];
+  const onCrash = (err: unknown) => crashes.push(err);
+  process.on("unhandledRejection", onCrash);
+  const started = prompt("anything");
+  stale = true;
+  await started.catch(() => {});
+  await new Promise((r) => setTimeout(r, 60));
+  process.off("unhandledRejection", onCrash);
+  expect(crashes).toEqual([]);
+});
