@@ -92,14 +92,14 @@ See SPEC.md for the models and the rest of the settings.
 `o6y mcp` serves the same stores as a local MCP server over stdio, for agents other than pi (Claude Code, Codex, Cursor…). Add it to your agent:
 
 ```bash
-claude mcp add o6y -- npx -y github:sergiosegrera/o6y#v0.9.0 mcp     # Claude Code
+claude mcp add o6y -- npx -y github:sergiosegrera/o6y#v0.10.0 mcp     # Claude Code
 ```
 
 ```toml
 # Codex: ~/.codex/config.toml
 [mcp_servers.o6y]
 command = "npx"
-args = ["-y", "github:sergiosegrera/o6y#v0.9.0", "mcp"]
+args = ["-y", "github:sergiosegrera/o6y#v0.10.0", "mcp"]
 ```
 
 The store is found as for the CLI: `O6Y_HOME`, `o6y --global DIR mcp`, or `~/.agents/o6y`.
