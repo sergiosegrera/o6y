@@ -7,6 +7,7 @@ import { DEFAULT_DREAM, parseRootSchema } from "../src/core/schema.ts";
 import { main } from "../src/cli/main.ts";
 import { makeLayers, Store } from "../src/core/store.ts";
 import { readRuns } from "../src/dream/status.ts";
+import { withInstructions } from "../src/dream/prompts.ts";
 import { renderDreamPage } from "../src/viewer/model.ts";
 import { type AgentRunner, findUnprocessed, runDream } from "../src/dream/runner.ts";
 import { dreamsDir, readLedger } from "../src/dream/state.ts";
@@ -265,4 +266,16 @@ test("a dream saves its progress while it runs, and an abandoned one reads as ab
   expect(readRuns(env)[0]!.status).toBe("aborted");
   writeFileSync(file, JSON.stringify({ ...finished, status: "running", pid: process.pid }));
   expect(readRuns(env)[0]!.status).toBe("running");
+});
+
+test("a dream's agents get the store's guidance, after the defaults it overrides", async () => {
+  session("a", [header("a", tmp), user("1", null, "hello")]);
+  writeFileSync(join(g, ".schema.md"), `${readFileSync(join(g, ".schema.md"), "utf8").trimEnd()}\n\nThe repo wins.\n`);
+  let system = "";
+  await runDream(options(async (r) => {
+    system = r.system;
+    return { text: "nothing durable", cost: 0, tokens: 0 };
+  }));
+  expect(system.indexOf("The repo wins.")).toBeGreaterThan(system.indexOf("Before every write"));
+  expect(withInstructions("base", "", "")).toBe("base");
 });

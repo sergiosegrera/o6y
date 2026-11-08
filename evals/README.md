@@ -65,3 +65,7 @@ export default defineCase({
 ```
 
 The available checks are in `lib.ts`: `hasObject`, `noObject`, `objectCount`, `lintClean`, `answerMatches`, `readObject` (the `read` tool, `o6y show` or `cat`), `maxToolCalls`, `typeSchema` and `ranCommand` (a bash call ran `o6y <command>`). Any `{ label, test(ctx) }` works too, where `ctx` contains the loaded `Store` and every run's tool calls and answer.
+
+## Dreams
+
+`bun evals/dream-bloat.ts [--case lookup|chatter]` runs one dream on a made-up session and checks it keeps the trap and the decision, copies no lookup values, and stays within a size budget. The `chatter` case has nothing worth storing, so the right result is no changes.

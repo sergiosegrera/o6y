@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.10.1
+
+- **Dreams write less, and less lookup data.** Analyzers now correct memory first, change nothing by default, and test every write: could a future agent read this from a file or a command? New objects need a one-line reason, and entries stay short. The organizer can cut lookups, shorten, delete objects with nothing else in them, and trim pinned objects over budget.
+- The store's root guidance now reaches dream agents directly and overrides the default rules on what to store.
+- `evals/dream-bloat.ts` checks that a dream stores the trap and not the config values.
+
 ## 0.10.0
 
 - **Dreaming:** `/o6y-dream` consolidates past pi sessions into memory, with a per-session analyzer and an organizer, on staged copies applied as one validated change. Configure it with a `dream:` block in the root schema (`model`, `analyzerModel`, `organizerModel`, `thinking`, `maxToolResultChars`, `pageChars`, `instructions`).

@@ -7,7 +7,7 @@ import { rmSync } from "node:fs";
 import { join } from "node:path";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { DreamSettings } from "../core/schema.ts";
-import { canonicalPath, makeLayers } from "../core/store.ts";
+import { canonicalPath, makeLayers, Store } from "../core/store.ts";
 import { type DreamRun, findUnprocessed } from "./status.ts";
 import { ANALYZER_SYSTEM, analyzerPrompt, ORGANIZER_SYSTEM, organizerPrompt, withInstructions } from "./prompts.ts";
 import { acquireLock, applyStaged, copyStore, dreamsDir, readLedger, runDir, stagedChanged, writeLedger, writeRun } from "./state.ts";
@@ -86,7 +86,8 @@ export async function runDream(opts: DreamOptions): Promise<DreamRun> {
       run.cost += r.cost;
       run.tokens += r.tokens;
     };
-    const instructed = (system: string) => withInstructions(system, opts.settings.instructions);
+    const guidance = [...Store.load(layers).rootGuidance.values()].join("\n\n");
+    const instructed = (system: string) => withInstructions(system, opts.settings.instructions, guidance);
     const ledger = readLedger(dir);
     const leaves = new Map<string, string>();
 
@@ -116,7 +117,7 @@ export async function runDream(opts: DreamOptions): Promise<DreamRun> {
         });
         spend(result);
         record.ok = true;
-        record.summary = result.text.slice(0, 500);
+        record.summary = result.text.slice(0, 1500);
         leaves.set(transcript.id, part.leaf);
       } catch (err) {
         opts.signal?.throwIfAborted();
@@ -140,7 +141,7 @@ export async function runDream(opts: DreamOptions): Promise<DreamRun> {
           signal: opts.signal,
         });
         spend(result);
-        run.organizer = { ok: true, summary: result.text.slice(0, 500) };
+        run.organizer = { ok: true, summary: result.text.slice(0, 1500) };
       } catch (err) {
         opts.signal?.throwIfAborted();
         run.organizer.summary = `failed: ${err instanceof Error ? err.message : err}`;

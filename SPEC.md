@@ -202,7 +202,7 @@ dream:
   thinking: ""                   # off, minimal, low, medium, high, xhigh, max; empty = the pi session's level
   maxToolResultChars: 3000       # trim tool calls and results to this size
   pageChars: 30000               # transcript page size
-  instructions: ""               # extra guidance for both agents
+  instructions: ""               # extra guidance for both agents, e.g. "lessons, traps and decisions with their reasons; point to files rather than copying them"
 ---
 ```
 
