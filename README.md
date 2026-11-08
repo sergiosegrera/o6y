@@ -83,7 +83,7 @@ See SPEC.md for the models and the rest of the settings.
 
 ## Dreaming
 
-`/o6y-dream` reads past pi sessions and brings memory in line with them: an analyzer per session corrects and adds to memory, then an organizer tidies the result. Changes apply automatically and may touch anything in the store; the previous state is kept under `$O6Y_CACHE/dreams/runs`. Use `--dry-run` to count unprocessed sessions, `--here` for this directory only and `--limit N` for a smaller batch. Transcripts are sent to the configured model. Set the model and other options in a `dream:` block in the root schema (see SPEC.md). Run `o6y dream` to see how many sessions are waiting and how the last dream went, and `o6y dream run [--here] [--limit N] [--dry-run]` to run one from the command line, which needs `pi` on your PATH.
+`/o6y-dream` reads past pi sessions and brings memory in line with them: an analyzer per session corrects and adds to memory, then an organizer tidies the result. Changes apply automatically and may touch anything in the store; the previous state is kept under `$O6Y_CACHE/dreams/runs`. Use `--dry-run` to count unprocessed sessions, `--here` for this directory only, `--since 30d` (or a date) to skip older sessions and `--limit N` for a smaller batch. Transcripts are sent to the configured model. Set the model and other options in a `dream:` block in the root schema (see SPEC.md). Run `o6y dream` to see how many sessions are waiting and how the last dream went, and `o6y dream run [--here] [--limit N] [--since 30d|DATE] [--dry-run]` to run one from the command line, which needs `pi` on your PATH.
 
 ## Other agents (MCP, deprecated)
 
@@ -92,14 +92,14 @@ See SPEC.md for the models and the rest of the settings.
 `o6y mcp` serves the same stores as a local MCP server over stdio, for agents other than pi (Claude Code, Codex, Cursor…). Add it to your agent:
 
 ```bash
-claude mcp add o6y -- npx -y github:sergiosegrera/o6y#v0.10.3 mcp     # Claude Code
+claude mcp add o6y -- npx -y github:sergiosegrera/o6y#v0.10.4 mcp     # Claude Code
 ```
 
 ```toml
 # Codex: ~/.codex/config.toml
 [mcp_servers.o6y]
 command = "npx"
-args = ["-y", "github:sergiosegrera/o6y#v0.10.3", "mcp"]
+args = ["-y", "github:sergiosegrera/o6y#v0.10.4", "mcp"]
 ```
 
 The store is found as for the CLI: `O6Y_HOME`, `o6y --global DIR mcp`, or `~/.agents/o6y`.

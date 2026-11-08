@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.10.4
+
+- **The organizer does real work on big dreams.** It now gets the list of objects the dream created and changed, plus pairs that look alike, and a checklist: duplicates by cause, narration, unearned entries, copies, undeclared fields and size.
+- **Analyzers write less noise.** They skip what is already fixed, self-explaining, unreproduced or ordinary tool use; update a sighting instead of appending a paragraph; keep notes on people to one line per tell; drop measurements and identifiers; search by cause before creating; link instead of copying; use only a type's declared fields; and leave store history to `log.md`.
+- `o6y dream run --since 30d` (or `2w`, or a date) skips older sessions.
+- `o6y mv` and `o6y merge` change only the link text in other objects. They used to reformat the frontmatter of every object they touched.
+- Link fields reject nested lists such as `related: [[a/b], [c/d]]` or `[[[a/b]]]`. A lone `[[a/b]]` is still accepted.
+
 ## 0.10.3
 
 - **The viewer's dream page handles big batches.** Totals come first, then failures and changes, with sessions that found nothing folded into a count per directory. `x` shows every session in full, `[`/`]` jump between sections, and the footer shows your position.

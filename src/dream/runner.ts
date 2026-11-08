@@ -9,8 +9,8 @@ import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { DreamSettings } from "../core/schema.ts";
 import { canonicalPath, makeLayers, Store } from "../core/store.ts";
 import { type DreamRun, findUnprocessed } from "./status.ts";
-import { ANALYZER_SYSTEM, analyzerPrompt, ORGANIZER_SYSTEM, organizerPrompt, withInstructions } from "./prompts.ts";
-import { acquireLock, applyStaged, copyStore, dreamsDir, readLedger, runDir, stagedChanged, writeLedger, writeRun } from "./state.ts";
+import { ANALYZER_SYSTEM, analyzerPrompt, ORGANIZER_SYSTEM, organizerPrompt, similarObjects, withInstructions } from "./prompts.ts";
+import { acquireLock, applyStaged, copyStore, dreamsDir, readLedger, runDir, stagedChanged, stagedObjects, writeLedger, writeRun } from "./state.ts";
 import { storeTools, transcriptTool } from "./tools.ts";
 import { paginate, renderEntries } from "./transcript.ts";
 
@@ -33,6 +33,8 @@ export interface DreamOptions {
   excludeSession?: string;
   here?: boolean;
   limit?: number;
+  /** Only sessions started at or after this ISO time. */
+  since?: string;
   dryRun?: boolean;
   settings: DreamSettings;
   agent: AgentRunner;
@@ -130,11 +132,12 @@ export async function runDream(opts: DreamOptions): Promise<DreamRun> {
       opts.signal?.throwIfAborted();
       run.organizer = { ok: false, summary: "" };
       progress("organizing");
+      const changed = stagedObjects(base, staged);
       try {
         const result = await opts.agent({
           role: "organizer",
           system: instructed(ORGANIZER_SYSTEM),
-          prompt: organizerPrompt(succeeded),
+          prompt: organizerPrompt(succeeded, changed, similarObjects(Store.load(layers).objects.values(), [...changed.created, ...changed.updated])),
           tools: storeTools(layers),
           model: models.organizer,
           thinking: opts.settings.thinking,

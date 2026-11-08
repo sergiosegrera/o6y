@@ -7,33 +7,33 @@ import {
   dreamStatus,
   dreamsDir,
   readRuns
-} from "./chunk-21mbrgke.js";
+} from "./chunk-brgms8bc.js";
 import {
   displayPath
-} from "./chunk-j881ctwp.js";
+} from "./chunk-r72565yy.js";
 import {
   LOG_LINE,
   storeSignature
-} from "./chunk-w5dq0wfg.js";
+} from "./chunk-gcxpqqhg.js";
 import {
   adjacency,
   graphData
-} from "./chunk-4dxykps9.js";
+} from "./chunk-4f0qnmrg.js";
 import {
   neighbors
-} from "./chunk-9q7vjba0.js";
+} from "./chunk-nx45tbs7.js";
 import {
   cacheRoot,
   embedderFor,
   search,
   semanticUnavailable,
   syncIndex
-} from "./chunk-xg2qjjsk.js";
+} from "./chunk-7ffqdz50.js";
 import {
   LOG_FILE,
   RESERVED_FIELDS,
   Store
-} from "./chunk-h52xt07b.js";
+} from "./chunk-byp1kbkq.js";
 
 // src/viewer/run.tsx
 import { spawnSync } from "node:child_process";

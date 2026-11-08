@@ -376,6 +376,11 @@ function checkValue(value: unknown, field: FieldSpec): string | string[] | undef
         ? undefined
         : "must be a list of strings";
     case "link": {
+      // A lone unquoted `[[type/slug]]` is how YAML gives `[["type/slug"]]`; any other nesting is a mistake.
+      const wikilink = Array.isArray(value) && value.length === 1 && Array.isArray(value[0]) && value[0].length === 1 && typeof value[0][0] === "string";
+      if (Array.isArray(value) && value.some(Array.isArray) && !wikilink) {
+        return "has a nested list; write links as `[type/slug, type/slug]`, or quote each `\"[[type/slug]]\"`";
+      }
       const targets = normalizeLinkValue(value);
       if (!targets) return "must be a link like `type/slug` or `[[type/slug]]`";
       if (!field.many && targets.length !== 1) return "must be a single link (this field is not `many`)";

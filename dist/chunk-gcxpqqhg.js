@@ -11,7 +11,7 @@ import {
   normalizeLinkValue,
   parseDoc,
   splitDoc
-} from "./chunk-h52xt07b.js";
+} from "./chunk-byp1kbkq.js";
 
 // src/core/format.ts
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -205,7 +205,7 @@ ${walk(full, depth + 1)}`;
 // src/core/edit.ts
 import { existsSync as existsSync3, mkdirSync as mkdirSync3, readdirSync as readdirSync2, readFileSync as readFileSync3, rmdirSync as rmdirSync2, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "node:fs";
 import { dirname as dirname2, join as join3 } from "node:path";
-import { isMap, isScalar, parse as parse2, parseDocument as parseDocument2, Scalar } from "yaml";
+import { isMap, isScalar, isSeq, parse as parse2, parseDocument as parseDocument2, Scalar } from "yaml";
 
 // src/core/managed.ts
 import { parse } from "yaml";
@@ -278,7 +278,7 @@ function editFrontmatter(text, fn) {
   if (doc.contents === null)
     doc.contents = doc.createNode({});
   const newBody = fn(doc);
-  const yaml = isMap(doc.contents) && doc.contents.items.length === 0 ? "" : tidyFlowLists(doc.toString());
+  const yaml = isMap(doc.contents) && doc.contents.items.length === 0 ? "" : tidyFlowLists(doc.toString({ lineWidth: 0 }));
   return joinDoc(yaml, newBody ?? body);
 }
 function tidyFlowLists(yaml) {
@@ -328,28 +328,28 @@ function rewriteBodyLinks(body, map) {
   }).join(`
 `);
 }
-function rewriteLinkValue(value, map) {
-  if (Array.isArray(value)) {
-    if (value.length === 1 && Array.isArray(value[0]) && value[0].length === 1 && typeof value[0][0] === "string") {
-      const next = map(value[0][0]);
-      return next ? { value: `[[${next}]]`, changed: true } : { value, changed: false };
-    }
-    let changed = false;
-    const out = value.map((v) => {
-      const r = rewriteLinkValue(v, map);
-      changed ||= r.changed;
-      return r.value;
-    });
-    return { value: out, changed };
-  }
-  if (typeof value === "string") {
-    const target = normalizeLinkValue(value)?.[0];
+function rewriteFrontmatterLinks(frontmatter, fields, map) {
+  const doc = parseDocument2(frontmatter);
+  if (doc.errors.length)
+    throw new Error("invalid YAML frontmatter");
+  const edits = [];
+  const visit = (node) => {
+    if (isSeq(node))
+      return node.items.forEach(visit);
+    if (!isScalar(node) || typeof node.value !== "string" || !node.range)
+      return;
+    const target = normalizeLinkValue(node.value)?.[0];
     const next = target ? map(target) : undefined;
-    if (!next)
-      return { value, changed: false };
-    return { value: value.trim().startsWith("[[") ? `[[${next}]]` : next, changed: true };
-  }
-  return { value, changed: false };
+    if (!target || !next)
+      return;
+    const [start, end] = node.range;
+    const source = frontmatter.slice(start, end);
+    if (source.includes(target))
+      edits.push({ start, end, text: source.replace(target, () => next) });
+  };
+  for (const field of fields)
+    visit(doc.get(field, true));
+  return edits.sort((a, b) => b.start - a.start).reduce((text, e) => text.slice(0, e.start) + e.text + text.slice(e.end), frontmatter);
 }
 function retargetLinks(store, plan, map) {
   for (const obj of store.objects.values()) {
@@ -357,21 +357,18 @@ function retargetLinks(store, plan, map) {
     if (current === null)
       continue;
     const linkFields = Object.entries(store.types.get(obj.type)?.schema.fields ?? {}).filter(([, f]) => f.type === "link").map(([name]) => name);
-    let next;
+    const { frontmatter, body } = splitDoc(current);
+    let fm = frontmatter;
     try {
-      next = editFrontmatter(current, (doc) => {
-        for (const field of linkFields) {
-          if (!doc.has(field))
-            continue;
-          const r = rewriteLinkValue(doc.toJS()[field], map);
-          if (r.changed)
-            doc.set(field, r.value);
-        }
-        return rewriteBodyLinks(splitDoc(current).body, map);
-      });
+      if (frontmatter !== undefined)
+        fm = rewriteFrontmatterLinks(frontmatter, linkFields, map);
     } catch {
       continue;
     }
+    const newBody = rewriteBodyLinks(body, map);
+    if (fm === frontmatter && newBody === body)
+      continue;
+    const next = fm === undefined ? newBody : joinDoc(fm, newBody);
     if (next !== current)
       plan.write(obj.path, next, { mechanical: true });
   }

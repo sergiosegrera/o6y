@@ -27,12 +27,22 @@ export interface DreamRun {
   snapshot?: string;
 }
 
-export function findUnprocessed(opts: { env: Record<string, string | undefined>; sessionsDir: string; excludeSession?: string; here?: boolean; cwd: string }): PendingTranscript[] {
+/** `--since`: `30d`, `2w` or `YYYY-MM-DD` as the ISO time to start from; undefined if malformed. */
+export function parseSince(value: string, now: Date): string | undefined {
+  const age = /^([1-9]\d*)([dw])$/.exec(value);
+  if (age) return new Date(now.getTime() - Number(age[1]) * (age[2] === "w" ? 7 : 1) * 86_400_000).toISOString();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined;
+  const date = new Date(`${value}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+export function findUnprocessed(opts: { env: Record<string, string | undefined>; sessionsDir: string; excludeSession?: string; here?: boolean; cwd: string; since?: string }): PendingTranscript[] {
   const ledger = readLedger(dreamsDir(opts.env));
   const out: PendingTranscript[] = [];
   for (const transcript of listTranscripts(opts.sessionsDir)) {
     if (transcript.id === opts.excludeSession) continue;
     if (opts.here && canonicalPath(transcript.cwd) !== canonicalPath(opts.cwd)) continue;
+    if (opts.since && transcript.startedAt < opts.since) continue;
     const part = pendingPart(transcript, ledger.sessions[transcript.id]?.leaf);
     if (part) out.push(part);
   }

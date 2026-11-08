@@ -123,6 +123,18 @@ describe("write commands", () => {
     expect(read("log.md")).toContain("create note/ledger-service (o6y mv)");
   });
 
+  test("link rewrites leave the rest of the frontmatter as written", async () => {
+    const long = "A summary that is long enough to be wrapped by a YAML printer at eighty columns";
+    put(".schema.md", "---\nsummaryMaxLength: 200\n---\nGuidance.\n");
+    put("note/flow.md", `---\nsummary: ${long}\nrelated: [note/ledger,   "[[note/api]]"]\n---\nBody.\n`);
+    put("note/bystander.md", `---\nsummary: ${long}\nrelated: [ note/api ]\n---\nBody.\n`);
+    const untouched = read("note/bystander.md");
+
+    expect((await o6y("merge note/ledger note/api")).code).toBe(0);
+    expect(read("note/flow.md")).toContain(`summary: ${long}\nrelated: [note/api,   "[[note/api]]"]\n`);
+    expect(read("note/bystander.md")).toBe(untouched);
+  });
+
   test("mv refusals", async () => {
     expect((await o6y("mv note/api note/api")).code).toBe(2); // already exists
     expect((await o6y("mv note/ledger note/api")).err).toContain("o6y merge");

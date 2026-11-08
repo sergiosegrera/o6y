@@ -131,8 +131,9 @@ function commit(ctx: Ctx, plan: Plan, via: string, dryRun: boolean): number {
  */
 async function runDreamInPi(ctx: Ctx, o: Record<string, any>): Promise<number> {
   if (o.limit !== undefined && !/^[1-9]\d*$/.test(o.limit)) throw new UsageError("--limit must be a positive whole number");
-  const flags = [o.here && "--here", o.limit && `--limit ${o.limit}`, o["dry-run"] && "--dry-run"].filter(Boolean);
-  const { readRuns } = await import("../dream/status.ts");
+  const { parseSince, readRuns } = await import("../dream/status.ts");
+  if (o.since !== undefined && !parseSince(o.since, new Date())) throw new UsageError("--since needs an age like 30d or 2w, or a date like 2026-10-01");
+  const flags = [o.here && "--here", o.limit && `--limit ${o.limit}`, o.since && `--since ${o.since}`, o["dry-run"] && "--dry-run"].filter(Boolean);
   const previous = readRuns(ctx.env)[0]?.id;
   const { args, env } = dreamInvocation(ctx.layers[0]!.root, flags as string[], ctx.env);
   const res = spawnSync("pi", args, {
@@ -824,9 +825,9 @@ const COMMANDS: Record<string, Command> = {
   },
 
   dream: {
-    usage: "o6y dream [--json]\n       o6y dream run [--here] [--limit N] [--dry-run]   (needs pi on PATH; applies without review)",
+    usage: "o6y dream [--json]\n       o6y dream run [--here] [--limit N] [--since 30d|DATE] [--dry-run]   (needs pi on PATH; applies without review)",
     summary: "show how many sessions are waiting and the last dream, or run a dream",
-    options: { ...JSON_OPT, ...DRY, here: { type: "boolean" }, limit: { type: "string" } },
+    options: { ...JSON_OPT, ...DRY, here: { type: "boolean" }, limit: { type: "string" }, since: { type: "string" } },
     async run(ctx, [action], o) {
       if (action === "run") return runDreamInPi(ctx, o);
       if (action) throw new UsageError("expected `o6y dream` or `o6y dream run`");

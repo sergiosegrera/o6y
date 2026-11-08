@@ -110,6 +110,19 @@ export function stagedChanged(base: string, staged: string): boolean {
   return [...files].some((rel) => read(join(base, rel)) !== read(join(staged, rel)));
 }
 
+/** Ids of the objects a dream created and changed in this staged store. */
+export function stagedObjects(base: string, staged: string): { created: string[]; updated: string[] } {
+  const out = { created: [] as string[], updated: [] as string[] };
+  for (const rel of storeFiles(staged).sort()) {
+    const match = /^([^/.][^/]*\/[^/.][^/]*)\.md$/.exec(rel);
+    if (!match) continue;
+    const before = read(join(base, rel));
+    if (before === null) out.created.push(match[1]!);
+    else if (before !== read(join(staged, rel))) out.updated.push(match[1]!);
+  }
+  return out;
+}
+
 /** Per target, the sessions the staged copy's log says changed it during this dream. */
 function stagedSources(base: string, staged: string): Map<string, Set<string>> {
   const out = new Map<string, Set<string>>();

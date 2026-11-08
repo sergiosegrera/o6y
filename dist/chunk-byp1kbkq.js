@@ -398,6 +398,10 @@ function checkValue(value, field) {
     case "list":
       return Array.isArray(value) && value.every((v) => typeof v === "string" || typeof v === "number") ? undefined : "must be a list of strings";
     case "link": {
+      const wikilink = Array.isArray(value) && value.length === 1 && Array.isArray(value[0]) && value[0].length === 1 && typeof value[0][0] === "string";
+      if (Array.isArray(value) && value.some(Array.isArray) && !wikilink) {
+        return 'has a nested list; write links as `[type/slug, type/slug]`, or quote each `"[[type/slug]]"`';
+      }
       const targets = normalizeLinkValue(value);
       if (!targets)
         return "must be a link like `type/slug` or `[[type/slug]]`";

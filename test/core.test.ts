@@ -117,6 +117,15 @@ describe("validation", () => {
     expect([...store.wanted.keys()]).toEqual(["person/bob"]);
   });
 
+  test("link fields accept a lone wikilink and reject other nesting", () => {
+    for (const bad of ["[[[org/a]]]", "[[org/a], [org/b]]"]) {
+      put(g, "person/ada.md", obj(`summary: Engineer\nname: Ada\nworks_at: ${bad}`));
+      expect(Store.load(layers).errors().map((i) => i.message).join()).toContain("nested list");
+    }
+    put(g, "person/ada.md", obj("summary: Engineer\nname: Ada\nworks_at: [[org/a]]"));
+    expect(Store.load(layers).errors().map((i) => i.message).join()).not.toContain("nested list");
+  });
+
   test("field errors", () => {
     put(g, "person/ada.md", obj("summary: this summary is definitely way too long for the cap\nstatus: retired"));
     const msgs = Store.load(layers).errors().map((i) => i.message);

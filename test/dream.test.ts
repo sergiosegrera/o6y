@@ -6,8 +6,8 @@ import { bootstrap } from "../src/core/fsops.ts";
 import { DEFAULT_DREAM, parseRootSchema } from "../src/core/schema.ts";
 import { main } from "../src/cli/main.ts";
 import { makeLayers, Store } from "../src/core/store.ts";
-import { readRuns } from "../src/dream/status.ts";
-import { withInstructions } from "../src/dream/prompts.ts";
+import { parseSince, readRuns } from "../src/dream/status.ts";
+import { similarObjects, withInstructions } from "../src/dream/prompts.ts";
 import { renderDreamPage } from "../src/viewer/model.ts";
 import { type AgentRunner, findUnprocessed, runDream } from "../src/dream/runner.ts";
 import { dreamsDir, readLedger } from "../src/dream/state.ts";
@@ -52,6 +52,42 @@ beforeEach(() => {
 });
 
 afterEach(() => rmSync(tmp, { recursive: true, force: true }));
+
+test("--since accepts ages and dates, and filters by when a session started", () => {
+  const now = new Date("2026-11-08T12:00:00.000Z");
+  expect(parseSince("7d", now)).toBe("2026-11-01T12:00:00.000Z");
+  expect(parseSince("2w", now)).toBe("2026-10-25T12:00:00.000Z");
+  expect(parseSince("2026-10-01", now)).toBeDefined();
+  for (const bad of ["", "0d", "soon", "2026-13"]) expect(parseSince(bad, now)).toBeUndefined();
+
+  session("old", [user("1", null, "hello")]);
+  expect(findUnprocessed({ ...options(writer()), since: "2026-10-31T00:00:00.000Z" })).toHaveLength(1);
+  expect(findUnprocessed({ ...options(writer()), since: "2026-11-02T00:00:00.000Z" })).toHaveLength(0);
+});
+
+test("the organizer is told what the dream changed and what looks alike", async () => {
+  mkdirSync(join(g, "note"), { recursive: true });
+  writeFileSync(join(g, "note/menu-locator-trap.md"), "---\nsummary: Menu locator fails inside the overflow popover\n---\nOld.\n");
+  session("a", [user("1", null, "hello")]);
+  let prompt = "";
+  await runDream(options(async ({ role, prompt: p, tools }) => {
+    if (role === "organizer") prompt = p;
+    else await callTool(tools, "store_write", { target: "note/overflow-menu-locator", content: "---\nsummary: Overflow popover menu locator fails\n---\nNew.\n" });
+    return { text: "ok", cost: 0, tokens: 0 };
+  }));
+  expect(prompt).toContain("Created (1): note/overflow-menu-locator");
+  expect(prompt).toContain("note/menu-locator-trap / note/overflow-menu-locator");
+});
+
+test("similar pairs need a touched object and real overlap", () => {
+  const objects = [
+    { id: "note/gt-submit", summary: "gt submit rewrites a teammate branch" },
+    { id: "note/gt-restack", summary: "gt restack rewrites a teammate branch" },
+    { id: "note/lazygit", summary: "lazygit keybinding clash" },
+  ];
+  expect(similarObjects(objects, ["note/gt-submit"])).toEqual([["note/gt-submit", "note/gt-restack"]]);
+  expect(similarObjects(objects, ["note/lazygit"])).toEqual([]);
+});
 
 test("the active branch follows parents from the last entry", () => {
   const t = parseTranscript("f", toJsonl([header("a", "/x"), user("1", null, "root"), user("2", "1", "abandoned"), user("3", "1", "kept")]))!;

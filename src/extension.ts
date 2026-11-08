@@ -418,7 +418,7 @@ export default function o6y(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("o6y-dream", {
-    description: "Consolidate past sessions into memory. Options: --dry-run, --here (this directory only), --limit N",
+    description: "Consolidate past sessions into memory. Options: --dry-run, --here (this directory only), --limit N, --since 30d|YYYY-MM-DD",
     handler: async (args, ctx) => {
       if (!layers.length) configure(ctx.cwd);
       const words = args.trim().split(/\s+/).filter(Boolean);
@@ -426,6 +426,10 @@ export default function o6y(pi: ExtensionAPI) {
       const limit = limitAt >= 0 ? Number(words[limitAt + 1]) : undefined;
       const report = (text: string, level: "info" | "warning") => (ctx.hasUI ? ctx.ui.notify(text, level) : console.log(text));
       if (limit !== undefined && (!Number.isInteger(limit) || limit <= 0)) return report("o6y dream: --limit needs a positive integer", "warning");
+      const { parseSince } = await import("./dream/status.ts");
+      const sinceAt = words.indexOf("--since");
+      const since = sinceAt >= 0 ? parseSince(words[sinceAt + 1] ?? "", new Date()) : undefined;
+      if (sinceAt >= 0 && !since) return report("o6y dream: --since needs an age like 30d or 2w, or a date like 2026-10-01", "warning");
       // Loaded on use: the SDK is heavy and only a dream needs it.
       const [{ formatRun, runDream }, { sdkAgent }, { sessionsRoot }] = await Promise.all([
         import("./dream/runner.ts"),
@@ -442,6 +446,7 @@ export default function o6y(pi: ExtensionAPI) {
           excludeSession: process.env.O6Y_DREAM_EXCLUDE || ctx.sessionManager.getSessionId(),
           here: words.includes("--here"),
           limit,
+          since,
           dryRun: words.includes("--dry-run"),
           settings: load().dream,
           agent: sdkAgent(ctx, pi.getThinkingLevel()),

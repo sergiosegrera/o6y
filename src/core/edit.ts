@@ -4,7 +4,7 @@
  */
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { type Document, isMap, isScalar, parse, parseDocument, Scalar } from "yaml";
+import { type Document, isMap, isScalar, isSeq, parse, parseDocument, Scalar } from "yaml";
 import { joinDoc, splitDoc } from "./frontmatter.ts";
 import { appendLog, type LogAction } from "./fsops.ts";
 import { normalizeLinkValue } from "./links.ts";
@@ -23,7 +23,7 @@ export function editFrontmatter(text: string, fn: (doc: Document) => string | vo
   if (doc.errors.length) throw new Error(`invalid YAML frontmatter: ${doc.errors[0]!.message.split("\n")[0]}`);
   if (doc.contents === null) doc.contents = doc.createNode({}) as never;
   const newBody = fn(doc);
-  const yaml = isMap(doc.contents) && doc.contents.items.length === 0 ? "" : tidyFlowLists(doc.toString());
+  const yaml = isMap(doc.contents) && doc.contents.items.length === 0 ? "" : tidyFlowLists(doc.toString({ lineWidth: 0 }));
   return joinDoc(yaml, newBody ?? body);
 }
 
@@ -91,28 +91,27 @@ export function rewriteBodyLinks(body: string, map: (id: string) => string | und
     .join("\n");
 }
 
-function rewriteLinkValue(value: unknown, map: (id: string) => string | undefined): { value: unknown; changed: boolean } {
-  if (Array.isArray(value)) {
-    // `[[a/b]]` unquoted parses as a nested array; treat it as one link.
-    if (value.length === 1 && Array.isArray(value[0]) && value[0].length === 1 && typeof value[0][0] === "string") {
-      const next = map(value[0][0]);
-      return next ? { value: `[[${next}]]`, changed: true } : { value, changed: false };
-    }
-    let changed = false;
-    const out = value.map((v) => {
-      const r = rewriteLinkValue(v, map);
-      changed ||= r.changed;
-      return r.value;
-    });
-    return { value: out, changed };
-  }
-  if (typeof value === "string") {
-    const target = normalizeLinkValue(value)?.[0];
+/**
+ * Rewrites the targets of link fields in raw frontmatter, changing only those characters, so
+ * list style, quoting and line wrapping stay as they were.
+ */
+function rewriteFrontmatterLinks(frontmatter: string, fields: string[], map: (id: string) => string | undefined): string {
+  const doc = parseDocument(frontmatter);
+  if (doc.errors.length) throw new Error("invalid YAML frontmatter");
+  const edits: { start: number; end: number; text: string }[] = [];
+  const visit = (node: unknown): void => {
+    if (isSeq(node)) return node.items.forEach(visit);
+    if (!isScalar(node) || typeof node.value !== "string" || !node.range) return;
+    const target = normalizeLinkValue(node.value)?.[0];
     const next = target ? map(target) : undefined;
-    if (!next) return { value, changed: false };
-    return { value: value.trim().startsWith("[[") ? `[[${next}]]` : next, changed: true };
-  }
-  return { value, changed: false };
+    if (!target || !next) return;
+    const [start, end] = node.range;
+    const source = frontmatter.slice(start, end);
+    if (source.includes(target)) edits.push({ start, end, text: source.replace(target, () => next) });
+  };
+  for (const field of fields) visit(doc.get(field, true));
+  // Last first, so earlier offsets stay valid.
+  return edits.sort((a, b) => b.start - a.start).reduce((text, e) => text.slice(0, e.start) + e.text + text.slice(e.end), frontmatter);
 }
 
 /**
@@ -126,19 +125,16 @@ export function retargetLinks(store: Store, plan: Plan, map: (id: string) => str
     const linkFields = Object.entries(store.types.get(obj.type)?.schema.fields ?? {})
       .filter(([, f]) => f.type === "link")
       .map(([name]) => name);
-    let next: string;
+    const { frontmatter, body } = splitDoc(current);
+    let fm = frontmatter;
     try {
-      next = editFrontmatter(current, (doc) => {
-        for (const field of linkFields) {
-          if (!doc.has(field)) continue;
-          const r = rewriteLinkValue(doc.toJS()[field], map);
-          if (r.changed) doc.set(field, r.value);
-        }
-        return rewriteBodyLinks(splitDoc(current).body, map);
-      });
+      if (frontmatter !== undefined) fm = rewriteFrontmatterLinks(frontmatter, linkFields, map);
     } catch {
       continue; // unparseable frontmatter: leave the file to lint
     }
+    const newBody = rewriteBodyLinks(body, map);
+    if (fm === frontmatter && newBody === body) continue;
+    const next = fm === undefined ? newBody : joinDoc(fm, newBody);
     if (next !== current) plan.write(obj.path, next, { mechanical: true });
   }
 }

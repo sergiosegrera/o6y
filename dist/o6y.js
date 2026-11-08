@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import {
   workPaths
-} from "./chunk-jd52nexw.js";
+} from "./chunk-1zbn4yjy.js";
 import {
   dreamInvocation
 } from "./chunk-v6va4yga.js";
@@ -11,19 +11,19 @@ import {
   renderObjectFooter,
   renderRootIndex,
   renderTypeIndex
-} from "./chunk-j881ctwp.js";
+} from "./chunk-r72565yy.js";
 import {
   Plan,
   editFrontmatter,
   parseValue,
   renameKey,
   retargetLinks
-} from "./chunk-w5dq0wfg.js";
+} from "./chunk-gcxpqqhg.js";
 import {
   lint,
   neighbors,
   query
-} from "./chunk-9q7vjba0.js";
+} from "./chunk-nx45tbs7.js";
 import {
   cacheRoot,
   embedderFor,
@@ -33,7 +33,7 @@ import {
   suggestionLogPath,
   suggestionStats,
   syncIndex
-} from "./chunk-xg2qjjsk.js";
+} from "./chunk-7ffqdz50.js";
 import {
   LOG_FILE,
   Store,
@@ -46,7 +46,7 @@ import {
   parseId,
   pinnedCost,
   splitDoc
-} from "./chunk-h52xt07b.js";
+} from "./chunk-byp1kbkq.js";
 
 // src/cli/o6y.ts
 import { readFileSync as readFileSync2 } from "node:fs";
@@ -118,8 +118,10 @@ function commit(ctx, plan, via, dryRun) {
 async function runDreamInPi(ctx, o) {
   if (o.limit !== undefined && !/^[1-9]\d*$/.test(o.limit))
     throw new UsageError("--limit must be a positive whole number");
-  const flags = [o.here && "--here", o.limit && `--limit ${o.limit}`, o["dry-run"] && "--dry-run"].filter(Boolean);
-  const { readRuns } = await import("./chunk-yawkn1gv.js");
+  const { parseSince, readRuns } = await import("./chunk-wd5047hy.js");
+  if (o.since !== undefined && !parseSince(o.since, new Date))
+    throw new UsageError("--since needs an age like 30d or 2w, or a date like 2026-10-01");
+  const flags = [o.here && "--here", o.limit && `--limit ${o.limit}`, o.since && `--since ${o.since}`, o["dry-run"] && "--dry-run"].filter(Boolean);
   const previous = readRuns(ctx.env)[0]?.id;
   const { args, env } = dreamInvocation(ctx.layers[0].root, flags, ctx.env);
   const res = spawnSync("pi", args, {
@@ -819,7 +821,7 @@ ${extra}
     async run(ctx) {
       ctx.err("o6y mcp is deprecated and will be removed in a future release; o6y is a pi extension.");
       const [{ serve }, { StdioServerTransport }] = await Promise.all([
-        import("./chunk-qb7fxr4q.js"),
+        import("./chunk-c4z34wqa.js"),
         import("@modelcontextprotocol/sdk/server/stdio.js")
       ]);
       const transport = new StdioServerTransport;
@@ -830,15 +832,15 @@ ${extra}
   },
   dream: {
     usage: `o6y dream [--json]
-       o6y dream run [--here] [--limit N] [--dry-run]   (needs pi on PATH; applies without review)`,
+       o6y dream run [--here] [--limit N] [--since 30d|DATE] [--dry-run]   (needs pi on PATH; applies without review)`,
     summary: "show how many sessions are waiting and the last dream, or run a dream",
-    options: { ...JSON_OPT, ...DRY, here: { type: "boolean" }, limit: { type: "string" } },
+    options: { ...JSON_OPT, ...DRY, here: { type: "boolean" }, limit: { type: "string" }, since: { type: "string" } },
     async run(ctx, [action], o) {
       if (action === "run")
         return runDreamInPi(ctx, o);
       if (action)
         throw new UsageError("expected `o6y dream` or `o6y dream run`");
-      const { dreamStatus, formatStatus } = await import("./chunk-yawkn1gv.js");
+      const { dreamStatus, formatStatus } = await import("./chunk-wd5047hy.js");
       const status = dreamStatus(ctx.cwd, ctx.env);
       ctx.out(o.json ? JSON.stringify({ ...status, last: status.last ? { id: status.last.id, status: status.last.status, startedAt: status.last.startedAt, changes: status.last.changes.length, cost: status.last.cost } : null }, null, 2) : formatStatus(status));
       return 0;
@@ -852,7 +854,7 @@ ${extra}
       const store = ctx.load();
       if (o.focus && !store.objects.has(o.focus))
         throw new UsageError(`no object \`${o.focus}\``);
-      const [{ graphData, renderGraphHtml }, { cacheRoot: cacheRoot2 }] = await Promise.all([import("./chunk-wpmybkhf.js"), import("./chunk-6v8s5pkm.js")]);
+      const [{ graphData, renderGraphHtml }, { cacheRoot: cacheRoot2 }] = await Promise.all([import("./chunk-jzqfbt58.js"), import("./chunk-2w8dr3rf.js")]);
       const path = o.out ? resolve(ctx.cwd, o.out) : join(cacheRoot2(ctx.env), "graph.html");
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, renderGraphHtml(graphData(store), o.focus), { mode: 384 });
@@ -870,7 +872,7 @@ ${extra}
       if (!ctx.isTTY)
         throw new UsageError("the viewer needs an interactive terminal");
       process.env.NODE_ENV ??= "production";
-      const { runViewer } = await import("./chunk-qnt3w1k0.js");
+      const { runViewer } = await import("./chunk-r6s3ntjd.js");
       await runViewer(ctx.layers, { current: id, view: o.graph ? "graph" : o.dreams ? "dreams" : o.activity ? "activity" : "browse", history: [], filter: "", open: [] });
       return 0;
     }

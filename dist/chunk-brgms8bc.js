@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import {
   cacheRoot
-} from "./chunk-xg2qjjsk.js";
+} from "./chunk-7ffqdz50.js";
 import {
   canonicalPath
-} from "./chunk-h52xt07b.js";
+} from "./chunk-byp1kbkq.js";
 
 // src/dream/status.ts
 import { readdirSync as readdirSync3, readFileSync as readFileSync3 } from "node:fs";
@@ -115,6 +115,15 @@ function pendingPart(transcript, doneLeaf) {
 }
 
 // src/dream/status.ts
+function parseSince(value, now) {
+  const age = /^([1-9]\d*)([dw])$/.exec(value);
+  if (age)
+    return new Date(now.getTime() - Number(age[1]) * (age[2] === "w" ? 7 : 1) * 86400000).toISOString();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value))
+    return;
+  const date = new Date(`${value}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
 function findUnprocessed(opts) {
   const ledger = readLedger(dreamsDir(opts.env));
   const out = [];
@@ -122,6 +131,8 @@ function findUnprocessed(opts) {
     if (transcript.id === opts.excludeSession)
       continue;
     if (opts.here && canonicalPath(transcript.cwd) !== canonicalPath(opts.cwd))
+      continue;
+    if (opts.since && transcript.startedAt < opts.since)
       continue;
     const part = pendingPart(transcript, ledger.sessions[transcript.id]?.leaf);
     if (part)
@@ -175,4 +186,4 @@ function formatStatus(s) {
 `);
 }
 
-export { dreamsDir, dreamRunning, findUnprocessed, readRuns, dreamStatus, formatStatus };
+export { dreamsDir, dreamRunning, parseSince, findUnprocessed, readRuns, dreamStatus, formatStatus };

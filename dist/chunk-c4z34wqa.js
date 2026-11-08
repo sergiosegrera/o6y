@@ -1,20 +1,20 @@
 #!/usr/bin/env node
 import {
   workPaths
-} from "./chunk-jd52nexw.js";
+} from "./chunk-1zbn4yjy.js";
 import {
   displayPath,
   renderObjectFooter,
   renderPromptSection,
   renderRootIndex,
   renderTypeIndex
-} from "./chunk-j881ctwp.js";
+} from "./chunk-r72565yy.js";
 import {
   Plan,
   appendLog,
   bootstrap,
   ensureFormat
-} from "./chunk-w5dq0wfg.js";
+} from "./chunk-gcxpqqhg.js";
 import {
   INDEX_FILE,
   LOG_FILE,
@@ -24,7 +24,7 @@ import {
   classifyPath,
   formatIssues,
   parseId
-} from "./chunk-h52xt07b.js";
+} from "./chunk-byp1kbkq.js";
 
 // src/mcp/server.ts
 import { existsSync, readFileSync } from "node:fs";
