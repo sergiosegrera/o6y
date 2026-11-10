@@ -68,4 +68,15 @@ The available checks are in `lib.ts`: `hasObject`, `noObject`, `objectCount`, `l
 
 ## Dreams
 
-`bun evals/dream-bloat.ts [--case lookup|chatter]` runs one dream on a made-up session and checks it keeps the trap and the decision, copies no lookup values, and stays within a size budget. The `chatter` case has nothing worth storing, so the right result is no changes.
+`bun evals/dream-bloat.ts [--case NAME]` runs one dream on a made-up session and checks what it stored. Each case is a way dreams have bloated a real store:
+
+| Case | Session | Right result |
+|---|---|---|
+| `lookup` (default) | a config file and a tool's help around one trap and one decision | the trap and the decision, no copied values, within a size budget |
+| `chatter` | only lookups | no changes |
+| `pr-bound` | a bug in the project's own code, fixed by an open pull request | no changes |
+| `inferred` | a cause the agent guessed and could not confirm | no changes |
+| `overlap` | a reviewer's habit, when memory already describes that reviewer | the existing object gains the habit; nothing is created |
+| `measurements` | one lasting trap among pixel offsets, timings and capture paths | the trap in 15 lines or fewer, with none of the numbers or paths |
+
+When a review of a real dream cuts an object, add a case for the pattern.

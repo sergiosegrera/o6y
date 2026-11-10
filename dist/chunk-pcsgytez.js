@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import {
   outgoing
-} from "./chunk-nx45tbs7.js";
+} from "./chunk-ppcshjpm.js";
 
 // src/core/graph.ts
 var BODY_MAX = 4000;
 var date = (v) => v instanceof Date ? v.toISOString().slice(0, 10) : typeof v === "string" ? v : undefined;
-function graphData(store) {
+function graphData2(store) {
   const links = [];
   const degree = new Map;
   const bump = (id) => degree.set(id, (degree.get(id) ?? 0) + 1);
@@ -37,7 +37,7 @@ function graphData(store) {
   }
   return { nodes, links, types: [...new Set(nodes.map((n) => n.type))].sort() };
 }
-function adjacency(data) {
+function adjacency2(data) {
   const adj = new Map(data.nodes.map((n) => [n.id, new Set]));
   for (const { source, target } of data.links) {
     adj.get(source)?.add(target);
@@ -383,9 +383,9 @@ label { display:flex; align-items:center; gap:7px; padding:2px 0; cursor:pointer
 </body>
 </html>
 `;
-function renderGraphHtml(data, focus) {
+function renderGraphHtml2(data, focus) {
   const json = JSON.stringify({ ...data, focus }).replace(/</g, "\\u003c").replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029");
   return PAGE.replace("__DATA__", () => json);
 }
 
-export { graphData, adjacency, renderGraphHtml };
+export { graphData2, adjacency2, renderGraphHtml2 };

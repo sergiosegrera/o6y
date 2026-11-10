@@ -1,30 +1,30 @@
 #!/usr/bin/env node
 import {
-  workPaths
-} from "./chunk-1zbn4yjy.js";
-import {
-  displayPath,
-  renderObjectFooter,
-  renderPromptSection,
-  renderRootIndex,
-  renderTypeIndex
-} from "./chunk-r72565yy.js";
-import {
-  Plan,
-  appendLog,
-  bootstrap,
-  ensureFormat
-} from "./chunk-gcxpqqhg.js";
-import {
+  parseId,
+  SCHEMA_FILE,
   INDEX_FILE,
   LOG_FILE,
-  SCHEMA_FILE,
-  Store,
   canonicalPath,
   classifyPath,
-  formatIssues,
-  parseId
-} from "./chunk-byp1kbkq.js";
+  Store,
+  formatIssues
+} from "./chunk-fh0jaf4t.js";
+import {
+  ensureFormat,
+  appendLog,
+  bootstrap,
+  Plan
+} from "./chunk-s38bcg3w.js";
+import {
+  displayPath,
+  renderRootIndex,
+  renderTypeIndex,
+  renderObjectFooter,
+  renderPromptSection
+} from "./chunk-y40aejzh.js";
+import {
+  workPaths
+} from "./chunk-9fk8shtb.js";
 
 // src/mcp/server.ts
 import { existsSync, readFileSync } from "node:fs";
@@ -303,14 +303,12 @@ function packageVersion() {
 }
 async function serve(opts, transport) {
   const server = createServer(opts);
-  const closed = new Promise((resolve2) => {
-    server.server.onclose = () => resolve2();
+  const closed = new Promise((resolve) => {
+    server.server.onclose = () => resolve();
   });
   await server.connect(transport);
   await closed;
 }
 export {
-  createServer,
-  prepareStores,
   serve
 };

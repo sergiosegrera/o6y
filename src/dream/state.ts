@@ -3,8 +3,9 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, r
 import { dirname, join, relative } from "node:path";
 import { cacheRoot } from "../core/semantic.ts";
 import { describe, LOG_LINE } from "../core/fsops.ts";
-import { formatIssues, type Layer, LOG_FILE } from "../core/store.ts";
+import { formatIssues, type Layer, LOG_FILE, makeLayers, Store } from "../core/store.ts";
 import { Plan } from "../core/edit.ts";
+import type { DreamRun, Review } from "./status.ts";
 
 export interface Ledger {
   sessions: Record<string, { leaf: string; at: string; run: string }>;
@@ -167,4 +168,135 @@ export function applyStaged(layers: Layer[], target: Layer, base: string, staged
   const result = plan.validate();
   if (result.blocking.length) return { changes: [], conflicts, error: formatIssues(result.blocking, layers) };
   return { changes: plan.apply("dream"), conflicts };
+}
+
+const OBJECT_FILE = /^([^/.][^/]*\/[^/.][^/]*)\.md$/;
+/** Text without the `o6y:` block, which changes on every write. */
+export const unmanaged = (text: string) => text.replace(/^o6y:\n(?:[ \t]+.*\n)*/m, "");
+
+/** Lines in one text and not the other, counting repeats. */
+function lineDelta(before: string, after: string): { added: number; removed: number } {
+  const counts = new Map<string, number>();
+  for (const line of before.split("\n")) counts.set(line, (counts.get(line) ?? 0) + 1);
+  let added = 0;
+  for (const line of after.split("\n")) {
+    const left = counts.get(line) ?? 0;
+    if (left) counts.set(line, left - 1);
+    else added++;
+  }
+  return { added, removed: [...counts.values()].reduce((n, c) => n + c, 0) };
+}
+
+/**
+ * What a reviewer needs from a staged store: each new object with why it was created, and each
+ * update by size, flagged when it touches a pinned object or adds more than `manyLines`.
+ */
+export function reviewOf(base: string, staged: string, reasons: Map<string, string>, pinned: Set<string>, manyLines: number): Review {
+  const review: Review = { created: [], updated: [], deleted: [] };
+  for (const rel of [...new Set([...storeFiles(base), ...storeFiles(staged)])].sort()) {
+    const id = OBJECT_FILE.exec(rel)?.[1];
+    if (!id) continue;
+    const before = read(join(base, rel));
+    const after = read(join(staged, rel));
+    if (before === after) continue;
+    if (after === null) review.deleted.push(id);
+    else if (before === null) review.created.push({ id, lines: unmanaged(after).trimEnd().split("\n").length, reason: reasons.get(id) ?? "" });
+    else {
+      const delta = lineDelta(unmanaged(before), unmanaged(after));
+      review.updated.push({ id, ...delta, flags: [...(pinned.has(id) ? ["pinned"] : []), ...(delta.added > manyLines ? [`over ${manyLines} lines added`] : [])] });
+    }
+  }
+  review.updated.sort((a, b) => b.added + b.removed - (a.added + a.removed) || a.id.localeCompare(b.id));
+  return review;
+}
+
+/** The changes applying a staged store would make, before any conflict with live edits. */
+export function stagedChanges(base: string, staged: string, liveRoot: string): { action: string; path: string }[] {
+  const out: { action: string; path: string }[] = [];
+  for (const rel of [...new Set([...storeFiles(base), ...storeFiles(staged)])].sort()) {
+    const before = read(join(base, rel));
+    const after = read(join(staged, rel));
+    if (before !== after) out.push({ action: after === null ? "delete" : before === null ? "create" : "update", path: join(liveRoot, rel) });
+  }
+  return out;
+}
+
+/** Records the sessions a dream read, so the next one continues after them. */
+export function recordSessions(dir: string, run: string, leaves: Record<string, string>, at: string): void {
+  const ledger = readLedger(dir);
+  for (const [session, leaf] of Object.entries(leaves)) ledger.sessions[session] = { leaf, at, run };
+  writeLedger(dir, ledger);
+}
+
+/** How a dream that got as far as applying went. */
+export const outcome = (run: DreamRun): DreamRun["status"] => {
+  const ok = run.sessions.filter((s) => s.ok).length;
+  return ok === 0 ? "failed" : ok < run.sessions.length || run.error || run.organizer?.ok === false ? "partial" : "done";
+};
+
+function refreshStaged(run: DreamRun, liveRoot: string, layers: Layer[], manyLines: number): void {
+  const reasons = new Map((run.review?.created ?? []).map((c) => [c.id, c.reason]));
+  const pinned = new Set([...Store.load(layers).objects.values()].filter((o) => o.pinned).map((o) => o.id));
+  run.review = reviewOf(run.snapshot!, run.staged!, reasons, pinned, manyLines);
+  run.changes = stagedChanges(run.snapshot!, run.staged!, liveRoot);
+}
+
+/** Takes objects out of a staged dream: each goes back to how it was before, and a new one is removed. */
+export function dropStaged(env: Record<string, string | undefined>, layers: Layer[], run: DreamRun, ids: string[], manyLines: number): string[] {
+  const touched = new Set([...(run.review?.created ?? []), ...(run.review?.updated ?? [])].map((o) => o.id).concat(run.review?.deleted ?? []));
+  const unknown = ids.filter((id) => !touched.has(id));
+  if (unknown.length) throw new Error(`dream ${run.id} doesn't change ${unknown.join(", ")}`);
+  for (const id of ids) {
+    const before = read(join(run.snapshot!, `${id}.md`));
+    const path = join(run.staged!, `${id}.md`);
+    if (before === null) rmSync(path, { force: true });
+    else {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, before);
+    }
+  }
+  refreshStaged(run, layers[0]!.root, layers, manyLines);
+  writeRun(dreamsDir(env), run.id, run);
+  // A dropped object may still be linked from what stays.
+  const issues = Store.load(makeLayers(run.staged!)).issues.filter((i) => i.severity !== "info" && ids.some((id) => i.message.includes(id)));
+  return issues.map((i) => i.message);
+}
+
+/** Applies a staged dream to the live store, as the dream itself would have. A result that doesn't validate stays staged. */
+export function applyRun(env: Record<string, string | undefined>, layers: Layer[], run: DreamRun, now = new Date()): DreamRun {
+  const dir = dreamsDir(env);
+  const release = acquireLock(dir);
+  if (!release) throw new Error("a dream is running; apply when it has finished");
+  try {
+    const result = applyStaged(layers, layers[0]!, run.snapshot!, run.staged!);
+    run.conflicts = result.conflicts;
+    run.error = result.error;
+    if (result.error) {
+      writeRun(dir, run.id, run);
+      return run;
+    }
+    run.changes = result.changes;
+    recordSessions(dir, run.id, run.leaves ?? {}, now.toISOString());
+    rmSync(run.staged!, { recursive: true, force: true });
+    delete run.staged;
+    delete run.leaves;
+    run.status = outcome(run);
+    writeRun(dir, run.id, run);
+    return run;
+  } finally {
+    release();
+  }
+}
+
+/** Throws a staged dream away. Its sessions count as read unless `retry`, which leaves them for the next dream. */
+export function discardRun(env: Record<string, string | undefined>, run: DreamRun, retry: boolean, now = new Date()): DreamRun {
+  const dir = dreamsDir(env);
+  if (!retry) recordSessions(dir, run.id, run.leaves ?? {}, now.toISOString());
+  rmSync(run.staged!, { recursive: true, force: true });
+  delete run.staged;
+  delete run.leaves;
+  run.status = "discarded";
+  run.changes = [];
+  writeRun(dir, run.id, run);
+  return run;
 }

@@ -2,7 +2,7 @@
 import {
   RESERVED_FIELDS,
   classifyPath
-} from "./chunk-byp1kbkq.js";
+} from "./chunk-fh0jaf4t.js";
 
 // src/core/semantic.ts
 import { createHash } from "node:crypto";
@@ -16,7 +16,7 @@ var RERANK_TEXT_MAX = 4000;
 function apiKey(env) {
   return env.CO_API_KEY || env.COHERE_API_KEY || undefined;
 }
-function semanticUnavailable(store, env) {
+function semanticUnavailable2(store, env) {
   if (!store.semantic.enabled)
     return "semantic search is off; set `semantic: { enabled: true }` in the root .schema.md (sends objects and queries to Cohere)";
   if (!apiKey(env))
@@ -64,8 +64,8 @@ function cohere(options) {
     }
   };
 }
-function embedderFor(store, env, fetchImpl) {
-  if (semanticUnavailable(store, env))
+function embedderFor2(store, env, fetchImpl) {
+  if (semanticUnavailable2(store, env))
     return;
   return cohere({
     apiKey: apiKey(env),
@@ -103,7 +103,7 @@ function objectText(store, obj, max = EMBED_TEXT_MAX) {
 ${obj.body.trim()}`.slice(0, max);
 }
 var hash = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
-function cacheRoot(env) {
+function cacheRoot2(env) {
   return env.O6Y_CACHE || join(env.XDG_CACHE_HOME || join(homedir(), ".cache"), "o6y");
 }
 function indexDir(cache, layer) {
@@ -148,7 +148,7 @@ function skippedObjects(store) {
   }
   return out;
 }
-async function syncIndex(store, embedder, cache, options = {}) {
+async function syncIndex2(store, embedder, cache, options = {}) {
   const result = { embedded: 0, removed: 0, total: 0, skipped: skippedObjects(store) };
   const model = store.semantic.embedModel;
   for (const layer of store.layers) {
@@ -167,7 +167,7 @@ async function syncIndex(store, embedder, cache, options = {}) {
     const fresh = stale.length ? await embedder.embed(stale.map((i) => texts[i]), "search_document") : [];
     const dim = fresh[0]?.length ?? usable?.dim ?? 0;
     if (usable && fresh.length && usable.dim !== dim)
-      return syncIndex(store, embedder, cache, { full: true });
+      return syncIndex2(store, embedder, cache, { full: true });
     const vectors = new Float32Array(objects.length * dim);
     const freshByIndex = new Map(stale.map((i, k) => [i, fresh[k]]));
     objects.forEach((o, i) => {
@@ -185,7 +185,7 @@ async function syncIndex(store, embedder, cache, options = {}) {
   }
   return result;
 }
-async function search(store, embedder, cache, query, options = {}) {
+async function search2(store, embedder, cache, query, options = {}) {
   const limit = options.limit ?? 10;
   const model = store.semantic.embedModel;
   const indexes = store.layers.map((l) => readIndex(indexDir(cache, l))).filter((i) => i?.model === model);
@@ -212,45 +212,11 @@ async function search(store, embedder, cache, query, options = {}) {
   const ranked = await embedder.rerank(query, candidates.map((c) => objectText(store, c.obj, RERANK_TEXT_MAX)), limit, options.signal);
   return ranked.map((r) => ({ ...candidates[r.index], score: r.score })).filter((h) => h.score >= minScore);
 }
-function worthSuggesting(prompt) {
-  const text = prompt.trim();
-  if (!text || text.startsWith("/"))
-    return false;
-  return text.split(/\s+/).length >= 3 || text.length >= 20;
-}
-async function relevantTo(store, embedder, cache, prompt, options = {}) {
-  const exclude = new Set(options.exclude);
-  for (const obj of store.objects.values())
-    if (obj.pinned)
-      exclude.add(obj.id);
-  return search(store, embedder, cache, prompt, {
-    limit: store.semantic.maxRelevant,
-    minScore: store.semantic.threshold,
-    exclude,
-    signal: options.signal
-  });
-}
-function formatRelevant(hits) {
-  return [
-    "<o6y-relevant>",
-    "Memory objects that look relevant to this message (score = rerank relevance, 0–1). Read the ones that apply before acting:",
-    ...hits.map((h) => `- [[${h.obj.id}]] (${h.score.toFixed(2)}) — ${h.obj.summary}`),
-    "</o6y-relevant>"
-  ].join(`
-`);
-}
-var suggestionLogPath = (cache) => join(cache, "suggestions.jsonl");
-function appendSuggestionLog(cache, record) {
-  try {
-    mkdirSync(cache, { recursive: true });
-    appendFileSync(suggestionLogPath(cache), `${JSON.stringify(record)}
-`);
-  } catch {}
-}
-function readSuggestionLog(cache) {
+var suggestionLogPath2 = (cache) => join(cache, "suggestions.jsonl");
+function readSuggestionLog2(cache) {
   let text;
   try {
-    text = readFileSync(suggestionLogPath(cache), "utf8");
+    text = readFileSync(suggestionLogPath2(cache), "utf8");
   } catch {
     return [];
   }
@@ -263,7 +229,7 @@ function readSuggestionLog(cache) {
     }
   });
 }
-function suggestionStats(records, since) {
+function suggestionStats2(records, since) {
   const recent = since ? records.filter((r) => new Date(r.t) >= since) : records;
   const used = new Set(recent.filter((r) => r.type === "use").map((r) => `${r.session}\x00${r.id}`));
   const edges = [0, 0.5, 0.7, 1.01];
@@ -297,4 +263,4 @@ function suggestionStats(records, since) {
   };
 }
 
-export { apiKey, semanticUnavailable, cohere, embedderFor, objectText, cacheRoot, indexDir, readIndex, skippedObjects, syncIndex, search, worthSuggesting, relevantTo, formatRelevant, suggestionLogPath, appendSuggestionLog, readSuggestionLog, suggestionStats };
+export { semanticUnavailable2, embedderFor2, cacheRoot2, syncIndex2, search2, suggestionLogPath2, readSuggestionLog2, suggestionStats2 };

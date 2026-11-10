@@ -1,55 +1,54 @@
 #!/usr/bin/env node
 import {
+  splitDoc,
+  parseId,
+  LOG_FILE,
+  canonicalPath,
+  makeLayers,
+  findLayer,
+  classifyPath,
+  Store,
+  pinnedCost,
+  formatIssues
+} from "./chunk-fh0jaf4t.js";
+import {
+  editFrontmatter,
+  renameKey,
+  parseValue,
+  retargetLinks,
+  Plan
+} from "./chunk-s38bcg3w.js";
+import {
+  displayPath,
+  renderRootIndex,
+  renderTypeIndex,
+  renderObjectFooter,
+  buildPromptSection
+} from "./chunk-y40aejzh.js";
+import {
+  semanticUnavailable2,
+  embedderFor2,
+  cacheRoot2,
+  syncIndex2,
+  search2,
+  suggestionLogPath2,
+  readSuggestionLog2,
+  suggestionStats2
+} from "./chunk-5x828vk5.js";
+import {
   workPaths
-} from "./chunk-1zbn4yjy.js";
+} from "./chunk-9fk8shtb.js";
 import {
   dreamInvocation
-} from "./chunk-xd8mr2b0.js";
+} from "./chunk-vfbt3qes.js";
 import {
   sessionsRoot
-} from "./chunk-kvedd0nk.js";
-import {
-  buildPromptSection,
-  displayPath,
-  renderObjectFooter,
-  renderRootIndex,
-  renderTypeIndex
-} from "./chunk-r72565yy.js";
-import {
-  Plan,
-  editFrontmatter,
-  parseValue,
-  renameKey,
-  retargetLinks
-} from "./chunk-gcxpqqhg.js";
+} from "./chunk-52syby8b.js";
 import {
   lint,
-  neighbors,
-  query
-} from "./chunk-nx45tbs7.js";
-import {
-  cacheRoot,
-  embedderFor,
-  readSuggestionLog,
-  search,
-  semanticUnavailable,
-  suggestionLogPath,
-  suggestionStats,
-  syncIndex
-} from "./chunk-7ffqdz50.js";
-import {
-  LOG_FILE,
-  Store,
-  __require,
-  canonicalPath,
-  classifyPath,
-  findLayer,
-  formatIssues,
-  makeLayers,
-  parseId,
-  pinnedCost,
-  splitDoc
-} from "./chunk-byp1kbkq.js";
+  query,
+  neighbors
+} from "./chunk-ppcshjpm.js";
 
 // src/cli/o6y.ts
 import { readFileSync as readFileSync2 } from "node:fs";
@@ -121,13 +120,13 @@ function commit(ctx, plan, via, dryRun) {
 async function runDreamInPi(ctx, o) {
   if (o.limit !== undefined && !/^[1-9]\d*$/.test(o.limit))
     throw new UsageError("--limit must be a positive whole number");
-  const { findUnprocessed, parseSince, readRuns } = await import("./chunk-2p3kn0yg.js");
+  const { findUnprocessed, parseSince, readRuns } = await import("./chunk-q8rhyqcq.js");
   const sessions = (o.session ?? []).flatMap((s) => s.split(",").filter(Boolean));
   if (sessions.length)
     findUnprocessed({ env: ctx.env, sessionsDir: sessionsRoot(ctx.env), cwd: ctx.cwd, excludeSession: ctx.env.O6Y_DREAM_EXCLUDE, sessions });
   if (o.since !== undefined && !parseSince(o.since, new Date))
     throw new UsageError("--since needs an age like 30d or 2w, or a date like 2026-10-01");
-  const flags = [o.here && "--here", o.limit && `--limit ${o.limit}`, o.since && `--since ${o.since}`, sessions.length && `--session ${sessions.join(",")}`, o["dry-run"] && "--dry-run"].filter(Boolean);
+  const flags = [o.here && "--here", o.limit && `--limit ${o.limit}`, o.since && `--since ${o.since}`, sessions.length && `--session ${sessions.join(",")}`, o["dry-run"] && "--dry-run", o.review && "--review"].filter(Boolean);
   const previous = readRuns(ctx.env)[0]?.id;
   const { args, env } = dreamInvocation(ctx.layers[0].root, flags, ctx.env);
   const res = spawnSync("pi", args, {
@@ -239,18 +238,18 @@ var COMMANDS = {
       if (minScore !== undefined && !(minScore >= 0 && minScore <= 1))
         throw new UsageError("--min-score takes a number between 0 and 1");
       const store = ctx.load();
-      const embedder = embedderFor(store, ctx.env, ctx.fetch);
+      const embedder = embedderFor2(store, ctx.env, ctx.fetch);
       let hits;
       if (!embedder) {
-        ctx.err(`o6y search: ${semanticUnavailable(store, ctx.env)}; falling back to word match`);
+        ctx.err(`o6y search: ${semanticUnavailable2(store, ctx.env)}; falling back to word match`);
         hits = wordMatch(store, question, o.type, limit).filter((h) => h.score >= (minScore ?? 0));
       } else {
-        const cache = cacheRoot(ctx.env);
-        const synced = await syncIndex(store, embedder, cache);
+        const cache = cacheRoot2(ctx.env);
+        const synced = await syncIndex2(store, embedder, cache);
         if (synced.skipped.length)
           ctx.err(`o6y search: ${skippedNote(synced.skipped)}`);
         const rerank = !o["no-rerank"];
-        hits = await search(store, embedder, cache, question, { type: o.type, limit, rerank, minScore: minScore ?? (rerank ? store.semantic.threshold : 0) });
+        hits = await search2(store, embedder, cache, question, { type: o.type, limit, rerank, minScore: minScore ?? (rerank ? store.semantic.threshold : 0) });
       }
       if (o.json) {
         ctx.out(JSON.stringify(hits.map((h) => ({ id: h.obj.id, score: round(h.score), similarity: round(h.similarity), summary: h.obj.summary, path: h.obj.path })), null, 2));
@@ -268,11 +267,11 @@ var COMMANDS = {
     options: { full: { type: "boolean" } },
     async run(ctx, _args, o) {
       const store = ctx.load();
-      const embedder = embedderFor(store, ctx.env, ctx.fetch);
+      const embedder = embedderFor2(store, ctx.env, ctx.fetch);
       if (!embedder)
-        throw new Error(semanticUnavailable(store, ctx.env));
-      const r = await syncIndex(store, embedder, cacheRoot(ctx.env), { full: !!o.full });
-      const lines = [`${r.total} objects indexed: ${r.embedded} embedded, ${r.removed} removed (cache: ${displayPath(cacheRoot(ctx.env))})`];
+        throw new Error(semanticUnavailable2(store, ctx.env));
+      const r = await syncIndex2(store, embedder, cacheRoot2(ctx.env), { full: !!o.full });
+      const lines = [`${r.total} objects indexed: ${r.embedded} embedded, ${r.removed} removed (cache: ${displayPath(cacheRoot2(ctx.env))})`];
       if (r.skipped.length)
         lines.push(skippedNote(r.skipped));
       ctx.out(lines.join(`
@@ -285,14 +284,14 @@ var COMMANDS = {
     summary: "how often suggested objects were then opened, by score (from the local suggestion log)",
     options: { since: { type: "string" }, ...JSON_OPT },
     run(ctx, _args, o) {
-      const cache = cacheRoot(ctx.env);
-      const stats = suggestionStats(readSuggestionLog(cache), o.since ? new Date(parseSince(o.since)) : undefined);
+      const cache = cacheRoot2(ctx.env);
+      const stats = suggestionStats2(readSuggestionLog2(cache), o.since ? new Date(parseSince(o.since)) : undefined);
       if (o.json) {
         ctx.out(JSON.stringify(stats, null, 2));
         return 0;
       }
       if (!stats.suggestions) {
-        ctx.out(`No suggestions logged yet (${displayPath(suggestionLogPath(cache))}).`);
+        ctx.out(`No suggestions logged yet (${displayPath(suggestionLogPath2(cache))}).`);
         return 0;
       }
       const pct = (used, of) => of ? `${Math.round(used / of * 100)}%` : "–";
@@ -693,11 +692,11 @@ ${extra}
       plan.mechanical = true;
       const objects = store.objectsOfType(type.name);
       if (action === "add") {
-        const [name2, kind = "string"] = rest;
-        if (!name2)
+        const [name, kind = "string"] = rest;
+        if (!name)
           throw new UsageError("missing field name");
-        if (type.schema.fields[name2])
-          throw new UsageError(`${type.name} already declares \`${name2}\``);
+        if (type.schema.fields[name])
+          throw new UsageError(`${type.name} already declares \`${name}\``);
         const extra = {};
         if (o.required)
           extra.required = true;
@@ -713,13 +712,13 @@ ${extra}
         editSchema(plan, type.path, (doc) => {
           if (!doc.has("fields") || doc.get("fields") === null)
             doc.set("fields", doc.createNode({}));
-          doc.setIn(["fields", name2], doc.createNode(spec, { flow: typeof spec === "object" }));
+          doc.setIn(["fields", name], doc.createNode(spec, { flow: typeof spec === "object" }));
         });
         if (o.default !== undefined) {
           const value = parseValue(o.default);
           for (const obj of objects) {
-            if (obj.data[name2] === undefined)
-              plan.write(obj.path, editFrontmatter(plan.read(obj.path), (doc) => void doc.set(name2, value)));
+            if (obj.data[name] === undefined)
+              plan.write(obj.path, editFrontmatter(plan.read(obj.path), (doc) => void doc.set(name, value)));
           }
         }
         return commit(ctx, plan, "o6y field add", !!o["dry-run"]);
@@ -827,7 +826,7 @@ ${extra}
     async run(ctx) {
       ctx.err("o6y mcp is deprecated and will be removed in a future release; o6y is a pi extension.");
       const [{ serve }, { StdioServerTransport }] = await Promise.all([
-        import("./chunk-c4z34wqa.js"),
+        import("./chunk-ef6dfjtx.js"),
         import("@modelcontextprotocol/sdk/server/stdio.js")
       ]);
       const transport = new StdioServerTransport;
@@ -837,16 +836,49 @@ ${extra}
     }
   },
   dream: {
-    usage: `o6y dream [--json]
-       o6y dream run [--here] [--limit N] [--since 30d|DATE] [--session ID]... [--dry-run]   (needs pi on PATH; applies without review)`,
-    summary: "show how many sessions are waiting and the last dream, or run a dream",
-    options: { ...JSON_OPT, ...DRY, here: { type: "boolean" }, limit: { type: "string" }, since: { type: "string" }, session: { type: "string", multiple: true } },
-    async run(ctx, [action], o) {
+    usage: [
+      "o6y dream [--json]",
+      "       o6y dream run [--here] [--limit N] [--since 30d|DATE] [--session ID]... [--dry-run] [--review]   (needs pi on PATH; applies at once unless --review or dream.review)",
+      "       o6y dream show [RUN] [--json]   what a dream created, updated and wants reviewed (default: the staged one, else the latest)",
+      "       o6y dream drop ID... · o6y dream apply · o6y dream discard [--retry]   review a staged dream"
+    ].join(`
+`),
+    summary: "show waiting sessions and the last dream, run one, or review a staged one",
+    options: { ...JSON_OPT, ...DRY, here: { type: "boolean" }, limit: { type: "string" }, since: { type: "string" }, session: { type: "string", multiple: true }, review: { type: "boolean" }, retry: { type: "boolean" } },
+    async run(ctx, [action, ...rest], o) {
       if (action === "run")
         return runDreamInPi(ctx, o);
+      if (action === "show" || action === "apply" || action === "discard" || action === "drop") {
+        const [{ findRun, formatRun, readRuns }, { applyRun, discardRun, dropStaged }] = await Promise.all([import("./chunk-q8rhyqcq.js"), import("./chunk-j7crxyh1.js")]);
+        let run;
+        try {
+          if (action === "show")
+            run = findRun(ctx.env, rest[0] ?? readRuns(ctx.env).find((r) => r.status === "staged")?.id);
+          else {
+            run = findRun(ctx.env, undefined, true);
+            if (action === "drop") {
+              if (!rest.length)
+                throw new UsageError("o6y dream drop needs the ids to take out");
+              const left = dropStaged(ctx.env, ctx.layers, run, rest, ctx.load().dream.maxAddedLines);
+              for (const message of left)
+                ctx.err(`o6y: still refers to a dropped object: ${message}`);
+            } else if (action === "apply")
+              run = applyRun(ctx.env, ctx.layers, run);
+            else
+              run = discardRun(ctx.env, run, Boolean(o.retry));
+          }
+        } catch (err) {
+          if (err instanceof UsageError)
+            throw err;
+          ctx.err(`o6y: ${err instanceof Error ? err.message : err}`);
+          return 1;
+        }
+        ctx.out(o.json ? JSON.stringify(run, null, 2) : formatRun(run));
+        return run.error ? 1 : 0;
+      }
       if (action)
-        throw new UsageError("expected `o6y dream` or `o6y dream run`");
-      const { dreamStatus, formatStatus } = await import("./chunk-2p3kn0yg.js");
+        throw new UsageError("expected `o6y dream`, or `o6y dream run|show|drop|apply|discard`");
+      const { dreamStatus, formatStatus } = await import("./chunk-q8rhyqcq.js");
       const status = dreamStatus(ctx.cwd, ctx.env);
       ctx.out(o.json ? JSON.stringify({ ...status, last: status.last ? { id: status.last.id, status: status.last.status, startedAt: status.last.startedAt, changes: status.last.changes.length, cost: status.last.cost } : null }, null, 2) : formatStatus(status));
       return 0;
@@ -860,8 +892,8 @@ ${extra}
       const store = ctx.load();
       if (o.focus && !store.objects.has(o.focus))
         throw new UsageError(`no object \`${o.focus}\``);
-      const [{ graphData, renderGraphHtml }, { cacheRoot: cacheRoot2 }] = await Promise.all([import("./chunk-mjfj800e.js"), import("./chunk-2w8dr3rf.js")]);
-      const path = o.out ? resolve(ctx.cwd, o.out) : join(cacheRoot2(ctx.env), "graph.html");
+      const [{ graphData, renderGraphHtml }, { cacheRoot }] = await Promise.all([import("./chunk-bbyfcma7.js"), import("./chunk-qfeg9kbm.js")]);
+      const path = o.out ? resolve(ctx.cwd, o.out) : join(cacheRoot(ctx.env), "graph.html");
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, renderGraphHtml(graphData(store), o.focus), { mode: 384 });
       ctx.out(path);
@@ -878,7 +910,7 @@ ${extra}
       if (!ctx.isTTY)
         throw new UsageError("the viewer needs an interactive terminal");
       process.env.NODE_ENV ??= "production";
-      const { runViewer } = await import("./chunk-042n8vge.js");
+      const { runViewer } = await import("./chunk-rhbhahcn.js");
       await runViewer(ctx.layers, { current: id, view: o.graph ? "graph" : o.dreams ? "dreams" : o.activity ? "activity" : "browse", history: [], filter: "", open: [] });
       return 0;
     }

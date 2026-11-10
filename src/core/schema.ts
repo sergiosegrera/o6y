@@ -91,6 +91,14 @@ export interface DreamSettings {
   pageChars: number;
   /** Extra guidance given to both agents. */
   instructions: string;
+  /** New objects one session's analyzer may create. */
+  maxNewObjects: number;
+  /** Lines one session's analyzer may add to an existing object. */
+  maxAddedLines: number;
+  /** Objects (`type/slug`, or `type/*`) a dream may read but not change; what it wanted to change is listed for review. */
+  protected: string[];
+  /** Stage every dream for review (`o6y dream apply`) instead of applying it. */
+  review: boolean;
 }
 
 export const DEFAULT_DREAM: DreamSettings = {
@@ -101,6 +109,10 @@ export const DEFAULT_DREAM: DreamSettings = {
   maxToolResultChars: 3000,
   pageChars: 30000,
   instructions: "",
+  maxNewObjects: 2,
+  maxAddedLines: 15,
+  protected: [],
+  review: false,
 };
 
 const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
@@ -133,6 +145,19 @@ function parseDream(raw: unknown, errors: string[]): Partial<DreamSettings> {
       case "instructions":
         if (typeof value === "string") out[key] = value.trim();
         else errors.push(`${where} must be text`);
+        break;
+      case "maxNewObjects":
+      case "maxAddedLines":
+        if (typeof value === "number" && Number.isInteger(value) && value >= 0) out[key] = value;
+        else errors.push(`${where} must be a whole number, 0 or more`);
+        break;
+      case "protected":
+        if (Array.isArray(value) && value.every((v) => typeof v === "string" && /^[a-z0-9-]+\/(\*|[^/\s]+)$/.test(v))) out[key] = value;
+        else errors.push(`${where} must be a list of object ids (type/slug) or type/*`);
+        break;
+      case "review":
+        if (typeof value === "boolean") out[key] = value;
+        else errors.push(`${where} must be true or false`);
         break;
       default:
         errors.push(`${where} is not a setting (allowed: ${Object.keys(DEFAULT_DREAM).join(", ")})`);

@@ -7,7 +7,8 @@ import { listTranscripts, type PendingTranscript, pendingPart, sessionsRoot } fr
 
 export interface DreamRun {
   id: string;
-  status: "running" | "nothing" | "dry-run" | "done" | "partial" | "aborted" | "failed";
+  /** `staged`: finished and waiting for `o6y dream apply` or `discard`; nothing in the store has changed. */
+  status: "running" | "nothing" | "dry-run" | "staged" | "done" | "partial" | "discarded" | "aborted" | "failed";
   startedAt: string;
   finishedAt?: string;
   models: { analyzer: string; organizer: string };
@@ -25,6 +26,65 @@ export interface DreamRun {
   cost: number;
   tokens: number;
   snapshot?: string;
+  /** What to look at when reviewing: new objects with the analyzer's reason, and updates by size. */
+  review?: Review;
+  /** Changes the dream wanted to make to protected objects; none were made. */
+  proposals?: { id: string; session?: string; change: string }[];
+  /** A staged dream: the copy holding its result, and the last entry read per session, recorded once applied. */
+  staged?: string;
+  leaves?: Record<string, string>;
+}
+
+export interface Review {
+  created: { id: string; lines: number; reason: string }[];
+  /** Largest first. `flags` name what deserves a look: a pinned object, or many added lines. */
+  updated: { id: string; added: number; removed: number; flags: string[] }[];
+  deleted: string[];
+}
+
+/** The run to apply, discard or show: the one named (by id or prefix), else the staged one, else the latest. */
+export function findRun(env: Record<string, string | undefined>, id?: string, staged = false): DreamRun {
+  const runs = readRuns(env);
+  const run = id ? runs.find((r) => r.id === id) ?? runs.find((r) => r.id.startsWith(id)) : staged ? runs.find((r) => r.status === "staged") : runs.find((r) => r.status !== "running");
+  if (!run) throw new Error(id ? `no dream \`${id}\`` : staged ? "no dream is staged for review" : "no dreams yet");
+  if (staged && run.status !== "staged") throw new Error(`dream ${run.id} is ${run.status}, not staged`);
+  return run;
+}
+
+/** A dream as a list to skim: what is new and why, then updates by size, then everything else. */
+export function formatRun(run: DreamRun): string {
+  if (run.status === "nothing") return "o6y dream: no unprocessed sessions.";
+  if (run.status === "dry-run") return `o6y dream: ${run.unprocessed} unprocessed session(s); this run would process ${run.sessions.length}.`;
+  const failed = run.sessions.filter((s) => !s.ok);
+  const lines = [`o6y dream ${run.status}: ${run.sessions.length - failed.length}/${run.sessions.length} session(s), ${run.changes.length} change(s), $${run.cost.toFixed(4)}, ${run.tokens} tokens`];
+  const r = run.review;
+  const listed: string[] = [];
+  if (r) {
+    for (const id of [...r.created.map((c) => c.id), ...r.updated.map((u) => u.id), ...r.deleted]) listed.push(`/${id}.md`);
+    if (r.created.length) lines.push(`New (${r.created.length}):`, ...r.created.map((c) => `  + ${c.id} (${c.lines} lines): ${c.reason || "no reason given"}`));
+    if (r.updated.length) lines.push(`Updated (${r.updated.length}), largest first:`, ...r.updated.map((u) => `  ~ ${u.id} +${u.added} -${u.removed}${u.flags.length ? `  [${u.flags.join(", ")}]` : ""}`));
+    if (r.deleted.length) lines.push(`Deleted (${r.deleted.length}):`, ...r.deleted.map((id) => `  - ${id}`));
+  }
+  const other = run.changes.filter((c) => !listed.some((rel) => c.path.endsWith(rel)));
+  if (other.length) lines.push(...(r ? ["Other files:"] : []), ...other.map((c) => `  ${c.action} ${c.path}`));
+  if (run.proposals?.length) {
+    lines.push(`Needs review (${run.proposals.length}): protected objects the dream wanted to change, and didn't:`);
+    for (const p of run.proposals) lines.push(`  ${p.id}${p.session ? ` (session ${p.session})` : ""}`, ...p.change.split("\n").map((l) => `    ${l}`));
+  }
+  lines.push(...run.conflicts.map((path) => `  kept live version (edited during the dream): ${path}`));
+  if (run.error) lines.push(`  not applied: ${run.error}`);
+  lines.push(...failed.map((s) => `  ${s.id}: ${s.summary}`));
+  if (run.status === "staged") {
+    lines.push(
+      "Nothing has changed in the store yet. Compare the two copies, edit the staged one if you like, then:",
+      `  before: ${run.snapshot}`,
+      `  staged: ${run.staged}`,
+      "  o6y dream drop ID...   take an object's change out",
+      "  o6y dream apply        apply what is left",
+      "  o6y dream discard      apply nothing (--retry to read the sessions again next time)",
+    );
+  } else if (run.snapshot) lines.push(`Store before this dream: ${run.snapshot}`);
+  return lines.join("\n");
 }
 
 /** `--since`: `30d`, `2w` or `YYYY-MM-DD` as the ISO time to start from; undefined if malformed. */
@@ -95,6 +155,8 @@ export interface DreamStatus {
   unprocessed: number;
   here: number;
   running: boolean;
+  /** A dream waiting for review. */
+  staged?: DreamRun;
   last?: DreamRun;
 }
 
@@ -106,6 +168,7 @@ export function dreamStatus(cwd: string, env: Record<string, string | undefined>
     unprocessed: pending.length,
     here: pending.filter((p) => canonicalPath(p.transcript.cwd) === here).length,
     running: dreamRunning(dreamsDir(env)),
+    staged: readRuns(env).find((r) => r.status === "staged"),
     last: readRuns(env).find((r) => r.status !== "running"),
   };
 }
@@ -114,6 +177,7 @@ export function formatStatus(s: DreamStatus): string {
   const noun = s.unprocessed === 1 ? "session" : "sessions";
   const lines = [s.unprocessed ? `${s.unprocessed} unprocessed ${noun} (${s.here} from this directory). Run /o6y-dream in pi to process them.` : "No unprocessed sessions."];
   if (s.running) lines.push("A dream is running now.");
+  if (s.staged) lines.push(`Dream ${s.staged.id} is staged for review: \`o6y dream show\`, then \`o6y dream apply\` or \`o6y dream discard\`.`);
   if (s.last) {
     const ok = s.last.sessions.filter((x) => x.ok).length;
     lines.push(`Last dream: ${s.last.startedAt.slice(0, 16).replace("T", " ")} UTC, ${s.last.status}: ${ok}/${s.last.sessions.length} sessions, ${s.last.changes.length} changes, $${s.last.cost.toFixed(4)}`);

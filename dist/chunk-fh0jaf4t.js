@@ -1,6 +1,48 @@
 #!/usr/bin/env node
-import { createRequire } from "node:module";
-var __require = /* @__PURE__ */ createRequire(import.meta.url);
+
+// src/core/store.ts
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
+
+// src/core/frontmatter.ts
+import { parse } from "yaml";
+var FENCE = /^---[ \t]*\r?\n([\s\S]*?)\r?\n?---[ \t]*(?:\r?\n|$)/;
+function parseDoc(text) {
+  const match = FENCE.exec(text);
+  if (!match)
+    return { data: undefined, body: text };
+  const body = text.slice(match[0].length);
+  const raw = match[1] ?? "";
+  if (raw.trim() === "")
+    return { data: {}, body };
+  try {
+    const data = parse(raw);
+    if (data === null || data === undefined)
+      return { data: {}, body };
+    if (typeof data !== "object" || Array.isArray(data)) {
+      return { data: undefined, body, error: "frontmatter must be a YAML mapping (key: value pairs)" };
+    }
+    return { data, body };
+  } catch (err) {
+    const message = err instanceof Error ? err.message.split(`
+`)[0] : String(err);
+    return { data: undefined, body, error: `invalid YAML frontmatter: ${message}` };
+  }
+}
+function splitDoc(text) {
+  const match = FENCE.exec(text);
+  if (!match)
+    return { frontmatter: undefined, body: text };
+  return { frontmatter: match[1] ?? "", body: text.slice(match[0].length) };
+}
+function joinDoc(frontmatter, body) {
+  const fm = frontmatter.endsWith(`
+`) ? frontmatter : `${frontmatter}
+`;
+  return `---
+${fm}---
+${body}`;
+}
 
 // src/core/links.ts
 var NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -49,46 +91,6 @@ function normalizeLinkValue(value) {
   return;
 }
 
-// src/core/frontmatter.ts
-import { parse } from "yaml";
-var FENCE = /^---[ \t]*\r?\n([\s\S]*?)\r?\n?---[ \t]*(?:\r?\n|$)/;
-function parseDoc(text) {
-  const match = FENCE.exec(text);
-  if (!match)
-    return { data: undefined, body: text };
-  const body = text.slice(match[0].length);
-  const raw = match[1] ?? "";
-  if (raw.trim() === "")
-    return { data: {}, body };
-  try {
-    const data = parse(raw);
-    if (data === null || data === undefined)
-      return { data: {}, body };
-    if (typeof data !== "object" || Array.isArray(data)) {
-      return { data: undefined, body, error: "frontmatter must be a YAML mapping (key: value pairs)" };
-    }
-    return { data, body };
-  } catch (err) {
-    const message = err instanceof Error ? err.message.split(`
-`)[0] : String(err);
-    return { data: undefined, body, error: `invalid YAML frontmatter: ${message}` };
-  }
-}
-function splitDoc(text) {
-  const match = FENCE.exec(text);
-  if (!match)
-    return { frontmatter: undefined, body: text };
-  return { frontmatter: match[1] ?? "", body: text.slice(match[0].length) };
-}
-function joinDoc(frontmatter, body) {
-  const fm = frontmatter.endsWith(`
-`) ? frontmatter : `${frontmatter}
-`;
-  return `---
-${fm}---
-${body}`;
-}
-
 // src/core/schema.ts
 var FIELD_TYPES = ["string", "number", "boolean", "date", "enum", "list", "link"];
 var DEFAULT_SETTINGS = {
@@ -115,7 +117,11 @@ var DEFAULT_DREAM = {
   thinking: "",
   maxToolResultChars: 3000,
   pageChars: 30000,
-  instructions: ""
+  instructions: "",
+  maxNewObjects: 2,
+  maxAddedLines: 15,
+  protected: [],
+  review: false
 };
 var THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 function parseDream(raw, errors) {
@@ -155,6 +161,25 @@ function parseDream(raw, errors) {
           out[key] = value.trim();
         else
           errors.push(`${where} must be text`);
+        break;
+      case "maxNewObjects":
+      case "maxAddedLines":
+        if (typeof value === "number" && Number.isInteger(value) && value >= 0)
+          out[key] = value;
+        else
+          errors.push(`${where} must be a whole number, 0 or more`);
+        break;
+      case "protected":
+        if (Array.isArray(value) && value.every((v) => typeof v === "string" && /^[a-z0-9-]+\/(\*|[^/\s]+)$/.test(v)))
+          out[key] = value;
+        else
+          errors.push(`${where} must be a list of object ids (type/slug) or type/*`);
+        break;
+      case "review":
+        if (typeof value === "boolean")
+          out[key] = value;
+        else
+          errors.push(`${where} must be true or false`);
         break;
       default:
         errors.push(`${where} is not a setting (allowed: ${Object.keys(DEFAULT_DREAM).join(", ")})`);
@@ -419,8 +444,6 @@ function checkValue(value, field) {
 }
 
 // src/core/store.ts
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
 var SCHEMA_FILE = ".schema.md";
 var INDEX_FILE = "index.md";
 var LOG_FILE = "log.md";
@@ -782,4 +805,4 @@ ${list.map((i) => `  - [${i.severity}] ${i.message}`).join(`
 `);
 }
 
-export { __require, parseDoc, splitDoc, joinDoc, parseId, normalizeLinkValue, RESERVED_FIELDS, describeField, SCHEMA_FILE, INDEX_FILE, LOG_FILE, canonicalPath, makeLayers, findLayer, classifyPath, Store, pinnedCost, blockingIssues, changeWarnings, formatIssues };
+export { parseDoc, splitDoc, joinDoc, parseId, normalizeLinkValue, RESERVED_FIELDS, describeField, SCHEMA_FILE, INDEX_FILE, LOG_FILE, canonicalPath, makeLayers, findLayer, classifyPath, Store, pinnedCost, blockingIssues, changeWarnings, formatIssues };
