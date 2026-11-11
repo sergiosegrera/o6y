@@ -5,38 +5,41 @@ import {
 import {
   dreamStatus,
   readRuns
-} from "./chunk-0s09w1y2.js";
+} from "./chunk-ah0bhgga.js";
 import"./chunk-kvedd0nk.js";
 import {
   displayPath
-} from "./chunk-57ebza5f.js";
+} from "./chunk-cx1e3zh8.js";
 import {
   dreamRunning,
   dreamsDir
-} from "./chunk-5qk0g301.js";
+} from "./chunk-10tk4hs0.js";
+import"./chunk-4s9dbqd4.js";
 import {
-  LOG_LINE,
-  storeSignature
-} from "./chunk-be6ws20h.js";
+  watchStores
+} from "./chunk-mw5ssfee.js";
 import {
   adjacency,
   graphData
-} from "./chunk-xnbrs8za.js";
+} from "./chunk-p3wgb7ze.js";
 import {
   neighbors
-} from "./chunk-cy6byj21.js";
+} from "./chunk-angs7n4p.js";
+import {
+  LOG_LINE
+} from "./chunk-asv2qy3p.js";
 import {
   cacheRoot,
   embedderFor,
   search,
   semanticUnavailable,
   syncIndex
-} from "./chunk-x46zecnb.js";
+} from "./chunk-f49neecq.js";
 import {
   LOG_FILE,
   RESERVED_FIELDS,
   Store
-} from "./chunk-cttfmfym.js";
+} from "./chunk-a8qzjqdm.js";
 
 // src/viewer/run.tsx
 import { spawnSync } from "node:child_process";
@@ -917,38 +920,6 @@ function renderLocalGraph(store, nodes, adj, selected, width, height) {
   const note = `${nodes.length - 1} linked${hidden > 0 ? ` · ${hidden} only in the list` : ""}`;
   lines.push([{ text: truncate(note, width), dim: true }]);
   return lines;
-}
-
-// src/viewer/watch.ts
-import { existsSync, watch } from "node:fs";
-function watchStores(layers, onChange, pollMs = 1500) {
-  let timer;
-  const fire = () => {
-    clearTimeout(timer);
-    timer = setTimeout(onChange, 80);
-  };
-  const watchers = [];
-  for (const layer of layers) {
-    if (!existsSync(layer.root))
-      continue;
-    try {
-      watchers.push(watch(layer.root, { recursive: true }, fire));
-    } catch {}
-  }
-  let last = storeSignature(layers);
-  const poll = setInterval(() => {
-    const now = storeSignature(layers);
-    if (now !== last) {
-      last = now;
-      fire();
-    }
-  }, pollMs);
-  return () => {
-    clearTimeout(timer);
-    clearInterval(poll);
-    for (const w of watchers)
-      w.close();
-  };
 }
 
 // src/viewer/app.tsx

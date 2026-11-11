@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import {
   workPaths
-} from "./chunk-qnjycz73.js";
+} from "./chunk-9c2a73zn.js";
 import {
   dreamInvocation
 } from "./chunk-xd8mr2b0.js";
@@ -14,19 +14,20 @@ import {
   renderObjectFooter,
   renderRootIndex,
   renderTypeIndex
-} from "./chunk-57ebza5f.js";
+} from "./chunk-cx1e3zh8.js";
 import {
   Plan,
   editFrontmatter,
   parseValue,
   renameKey,
   retargetLinks
-} from "./chunk-be6ws20h.js";
+} from "./chunk-4s9dbqd4.js";
 import {
   lint,
   neighbors,
   query
-} from "./chunk-cy6byj21.js";
+} from "./chunk-angs7n4p.js";
+import"./chunk-asv2qy3p.js";
 import {
   cacheRoot,
   embedderFor,
@@ -36,7 +37,7 @@ import {
   suggestionLogPath,
   suggestionStats,
   syncIndex
-} from "./chunk-x46zecnb.js";
+} from "./chunk-f49neecq.js";
 import {
   LOG_FILE,
   Store,
@@ -49,7 +50,7 @@ import {
   parseId,
   pinnedCost,
   splitDoc
-} from "./chunk-cttfmfym.js";
+} from "./chunk-a8qzjqdm.js";
 
 // src/cli/o6y.ts
 import { readFileSync as readFileSync2 } from "node:fs";
@@ -121,7 +122,7 @@ function commit(ctx, plan, via, dryRun) {
 async function runDreamInPi(ctx, o) {
   if (o.limit !== undefined && !/^[1-9]\d*$/.test(o.limit))
     throw new UsageError("--limit must be a positive whole number");
-  const { findUnprocessed, parseSince, readRuns } = await import("./chunk-wmxnts3a.js");
+  const { findUnprocessed, parseSince, readRuns } = await import("./chunk-p9zrqr8q.js");
   const sessions = (o.session ?? []).flatMap((s) => s.split(",").filter(Boolean));
   if (sessions.length)
     findUnprocessed({ env: ctx.env, sessionsDir: sessionsRoot(ctx.env), cwd: ctx.cwd, excludeSession: ctx.env.O6Y_DREAM_EXCLUDE, sessions });
@@ -827,7 +828,7 @@ ${extra}
     async run(ctx) {
       ctx.err("o6y mcp is deprecated and will be removed in a future release; o6y is a pi extension.");
       const [{ serve }, { StdioServerTransport }] = await Promise.all([
-        import("./chunk-kmcsx20z.js"),
+        import("./chunk-z04tyz04.js"),
         import("@modelcontextprotocol/sdk/server/stdio.js")
       ]);
       const transport = new StdioServerTransport;
@@ -850,7 +851,7 @@ ${extra}
       if (action === "run")
         return runDreamInPi(ctx, o);
       if (action === "show" || action === "apply" || action === "discard" || action === "drop") {
-        const [{ findRun, formatRun, readRuns }, { applyRun, discardRun, dropStaged }] = await Promise.all([import("./chunk-wmxnts3a.js"), import("./chunk-p512cypr.js")]);
+        const [{ findRun, formatRun, readRuns }, { applyRun, discardRun, dropStaged }] = await Promise.all([import("./chunk-p9zrqr8q.js"), import("./chunk-kgntcxt5.js")]);
         let run;
         try {
           if (action === "show")
@@ -879,27 +880,48 @@ ${extra}
       }
       if (action)
         throw new UsageError("expected `o6y dream`, or `o6y dream run|show|drop|apply|discard`");
-      const { dreamStatus, formatStatus } = await import("./chunk-wmxnts3a.js");
+      const { dreamStatus, formatStatus } = await import("./chunk-p9zrqr8q.js");
       const status = dreamStatus(ctx.cwd, ctx.env);
       ctx.out(o.json ? JSON.stringify({ ...status, last: status.last ? { id: status.last.id, status: status.last.status, startedAt: status.last.startedAt, changes: status.last.changes.length, cost: status.last.cost } : null }, null, 2) : formatStatus(status));
       return 0;
     }
   },
   graph: {
-    usage: "o6y graph [--focus ID] [--out FILE] [--no-open]",
-    summary: "write the whole store as an interactive graph page and open it in your browser",
-    options: { focus: { type: "string" }, out: { type: "string" }, "no-open": { type: "boolean" } },
+    usage: "o6y graph [--focus ID] [--out FILE] [--no-open] | o6y graph --live [--port N] [--focus ID] [--no-open]",
+    summary: "open the whole store as an interactive graph page in your browser (--live: serve it locally and update as the store changes)",
+    options: { focus: { type: "string" }, out: { type: "string" }, "no-open": { type: "boolean" }, live: { type: "boolean" }, port: { type: "string" } },
     async run(ctx, _args, o) {
       const store = ctx.load();
       if (o.focus && !store.objects.has(o.focus))
         throw new UsageError(`no object \`${o.focus}\``);
-      const [{ graphData, renderGraphHtml }, { cacheRoot: cacheRoot2 }] = await Promise.all([import("./chunk-mnkern0x.js"), import("./chunk-r5x1j7w2.js")]);
+      const open = (target) => {
+        if (ctx.isTTY && !o["no-open"])
+          spawnSync(process.platform === "darwin" ? "open" : "xdg-open", [target], { stdio: "ignore" });
+      };
+      if (o.live) {
+        if (o.out)
+          throw new UsageError("--out writes a file; --live serves the page instead");
+        const port = o.port === undefined ? 0 : Number(o.port);
+        if (!Number.isInteger(port) || port < 0 || port > 65535)
+          throw new UsageError("--port expects a port number");
+        const { serveGraph } = await import("./chunk-zsyyhh83.js");
+        const server = await serveGraph(ctx.layers, ctx.load, { focus: o.focus, port });
+        ctx.out(`${server.url}
+Serving the graph on this machine; it updates as the store changes. Ctrl-C stops.`);
+        open(server.url);
+        await new Promise((done) => {
+          process.once("SIGINT", done);
+          process.once("SIGTERM", done);
+        });
+        await server.close();
+        return 0;
+      }
+      const [{ graphData, renderGraphHtml }, { cacheRoot: cacheRoot2 }] = await Promise.all([import("./chunk-ysz8bgtd.js"), import("./chunk-wrh33909.js")]);
       const path = o.out ? resolve(ctx.cwd, o.out) : join(cacheRoot2(ctx.env), "graph.html");
       mkdirSync(dirname(path), { recursive: true });
       writeFileSync(path, renderGraphHtml(graphData(store), o.focus), { mode: 384 });
       ctx.out(path);
-      if (ctx.isTTY && !o["no-open"])
-        spawnSync(process.platform === "darwin" ? "open" : "xdg-open", [path], { stdio: "ignore" });
+      open(path);
       return 0;
     }
   },
@@ -911,7 +933,7 @@ ${extra}
       if (!ctx.isTTY)
         throw new UsageError("the viewer needs an interactive terminal");
       process.env.NODE_ENV ??= "production";
-      const { runViewer } = await import("./chunk-tnwcm158.js");
+      const { runViewer } = await import("./chunk-0zwr9rbj.js");
       await runViewer(ctx.layers, { current: id, view: o.graph ? "graph" : o.dreams ? "dreams" : o.activity ? "activity" : "browse", history: [], filter: "", open: [] });
       return 0;
     }

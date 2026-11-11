@@ -805,4 +805,4 @@ ${list.map((i) => `  - [${i.severity}] ${i.message}`).join(`
 `);
 }
 
-export { __require, parseDoc, splitDoc, joinDoc, parseId, normalizeLinkValue, RESERVED_FIELDS, describeField, SCHEMA_FILE, INDEX_FILE, LOG_FILE, canonicalPath, makeLayers, findLayer, classifyPath, Store, pinnedCost, blockingIssues, changeWarnings, formatIssues };
+export { __require, parseDoc, splitDoc, joinDoc, ID_RE, parseId, normalizeLinkValue, RESERVED_FIELDS, describeField, SCHEMA_FILE, INDEX_FILE, LOG_FILE, canonicalPath, makeLayers, findLayer, classifyPath, Store, pinnedCost, blockingIssues, changeWarnings, formatIssues };

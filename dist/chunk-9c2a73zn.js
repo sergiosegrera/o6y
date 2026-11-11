@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import {
   canonicalPath
-} from "./chunk-cttfmfym.js";
+} from "./chunk-a8qzjqdm.js";
 
 // src/core/context.ts
 import { execFileSync } from "node:child_process";

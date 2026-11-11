@@ -870,19 +870,37 @@ const COMMANDS: Record<string, Command> = {
   },
 
   graph: {
-    usage: "o6y graph [--focus ID] [--out FILE] [--no-open]",
-    summary: "write the whole store as an interactive graph page and open it in your browser",
-    options: { focus: { type: "string" }, out: { type: "string" }, "no-open": { type: "boolean" } },
+    usage: "o6y graph [--focus ID] [--out FILE] [--no-open] | o6y graph --live [--port N] [--focus ID] [--no-open]",
+    summary: "open the whole store as an interactive graph page in your browser (--live: serve it locally and update as the store changes)",
+    options: { focus: { type: "string" }, out: { type: "string" }, "no-open": { type: "boolean" }, live: { type: "boolean" }, port: { type: "string" } },
     async run(ctx, _args, o) {
       const store = ctx.load();
       if (o.focus && !store.objects.has(o.focus)) throw new UsageError(`no object \`${o.focus}\``);
+      const open = (target: string) => {
+        if (ctx.isTTY && !o["no-open"]) spawnSync(process.platform === "darwin" ? "open" : "xdg-open", [target], { stdio: "ignore" });
+      };
+      if (o.live) {
+        if (o.out) throw new UsageError("--out writes a file; --live serves the page instead");
+        const port = o.port === undefined ? 0 : Number(o.port);
+        if (!Number.isInteger(port) || port < 0 || port > 65535) throw new UsageError("--port expects a port number");
+        const { serveGraph } = await import("../viewer/graphServer.ts");
+        const server = await serveGraph(ctx.layers, ctx.load, { focus: o.focus, port });
+        ctx.out(`${server.url}\nServing the graph on this machine; it updates as the store changes. Ctrl-C stops.`);
+        open(server.url);
+        await new Promise<void>((done) => {
+          process.once("SIGINT", done);
+          process.once("SIGTERM", done);
+        });
+        await server.close();
+        return 0;
+      }
       const [{ graphData, renderGraphHtml }, { cacheRoot }] = await Promise.all([import("../core/graph.ts"), import("../core/semantic.ts")]);
       const path = o.out ? resolve(ctx.cwd, o.out) : join(cacheRoot(ctx.env), "graph.html");
       mkdirSync(dirname(path), { recursive: true });
       // The page holds object text, so only this user can read it.
       writeFileSync(path, renderGraphHtml(graphData(store), o.focus), { mode: 0o600 });
       ctx.out(path);
-      if (ctx.isTTY && !o["no-open"]) spawnSync(process.platform === "darwin" ? "open" : "xdg-open", [path], { stdio: "ignore" });
+      open(path);
       return 0;
     },
   },

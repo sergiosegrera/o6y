@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.13.0
+
+A better `o6y graph` page.
+
+- **Pages render as Markdown.** Headings, lists, task lists, tables, quotes and code, with `[[links]]` coloured by type that jump to their object; links to missing pages are dashed. Fields show under the summary, and links are split into "Links to" and "Linked from". Everything is still built as text nodes, never parsed as HTML.
+- **A full-screen reader.** `f`, the ↗ button or double-clicking a node opens the page full width; links keep working inside it. A separate button makes the whole page full screen.
+- **`o6y graph --live`** serves the page on 127.0.0.1 under a random path and updates it as the store changes: new and changed objects pulse in place without disturbing the layout, and the open page refreshes. `--port` picks the port.
+- **History.** `t` opens a timeline built from `log.md` and the created dates. Scrub or play it to watch the store grow, with recent changes ringed and a clickable feed of what changed.
+- Arrows show link direction, the URL follows the selected object so the back button and shared links work, an id copy button, and a key legend.
+
 ## 0.12.0
 
 The prompts now say what memory is for and leave more to the model's judgment, following Anthropic's finding that stronger models do better told the purpose than given fixed rules.

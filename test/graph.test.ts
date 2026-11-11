@@ -82,3 +82,50 @@ test("the page's markup has no escape codes from the bundler", () => {
   expect(html.slice(0, html.indexOf("<script"))).not.toMatch(/\\[ux][0-9a-fA-F]{2}/);
   expect(html).toContain("&minus;");
 });
+
+test("the graph carries fields, the layer and logged changes", () => {
+  put("note/b.md", "---\nsummary: B\nowner: \"[[note/hub]]\"\ntags: [x, y]\n---\nbody\n");
+  put("log.md", "# o6y log\n\n- 2026-03-01T10:00:00Z create note/b (cli)\n- 2026-03-02T10:00:00Z update root schema (cli)\n- 2026-03-03T10:00:00Z update note/b (dream) [pi:abc]\n");
+  const data = graphData(load());
+  const b = data.nodes.find((n) => n.id === "note/b")!;
+  expect(b.layer).toBe("global");
+  expect(b.fields).toEqual([["owner", ["[[note/hub]]"]], ["tags", ["x", "y"]]]);
+  expect(data.events).toEqual([
+    { at: "2026-03-01T10:00:00Z", action: "create", id: "note/b", via: "cli" },
+    { at: "2026-03-03T10:00:00Z", action: "update", id: "note/b", via: "dream" },
+  ]);
+});
+
+test("the live page asks for updates; the file page doesn't", () => {
+  const data = graphData(load());
+  expect(renderGraphHtml(data)).not.toContain('"live":true');
+  expect(renderGraphHtml(data, undefined, true)).toContain('"live":true');
+});
+
+test("the live server serves the page under a secret path and reports changes", async () => {
+  const { serveGraph } = await import("../src/viewer/graphServer.ts");
+  const server = await serveGraph(makeLayers(tmp), load, { watchMs: 50 });
+  try {
+    const root = new URL(server.url);
+    expect((await fetch(new URL("/", root))).status).toBe(404);
+    expect((await fetch(new URL("/nope/data", root))).status).toBe(404);
+    const page = await fetch(server.url);
+    expect(await page.text()).toContain('"live":true');
+    const before: any = await (await fetch(server.url + "data")).json();
+    expect(before.nodes.some((n: any) => n.id === "note/new")).toBe(false);
+
+    const events = await fetch(server.url + "events");
+    const reader = events.body!.getReader();
+    await reader.read();
+    put("note/new.md", "---\nsummary: New\n---\n");
+    const deadline = Date.now() + 4000;
+    let text = "";
+    while (!text.includes("event: change") && Date.now() < deadline) text += new TextDecoder().decode((await reader.read()).value);
+    expect(text).toContain("event: change");
+    reader.cancel();
+    const after: any = await (await fetch(server.url + "data")).json();
+    expect(after.nodes.some((n: any) => n.id === "note/new")).toBe(true);
+  } finally {
+    await server.close();
+  }
+});

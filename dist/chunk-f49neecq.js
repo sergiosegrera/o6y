@@ -2,7 +2,7 @@
 import {
   RESERVED_FIELDS,
   classifyPath
-} from "./chunk-cttfmfym.js";
+} from "./chunk-a8qzjqdm.js";
 
 // src/core/semantic.ts
 import { createHash } from "node:crypto";
