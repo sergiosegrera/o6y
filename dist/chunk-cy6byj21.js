@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 import {
-  normalizeLinkValue,
   RESERVED_FIELDS,
-  formatIssues
-} from "./chunk-fh0jaf4t.js";
+  formatIssues,
+  normalizeLinkValue
+} from "./chunk-cttfmfym.js";
 
 // src/core/ops.ts
 function lint(store) {

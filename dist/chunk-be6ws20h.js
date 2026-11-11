@@ -1,26 +1,17 @@
 #!/usr/bin/env node
 import {
-  parseDoc,
-  splitDoc,
-  joinDoc,
-  normalizeLinkValue,
-  SCHEMA_FILE,
   LOG_FILE,
-  findLayer,
-  classifyPath,
+  SCHEMA_FILE,
   Store,
   blockingIssues,
-  changeWarnings
-} from "./chunk-fh0jaf4t.js";
-
-// src/core/edit.ts
-import { existsSync as existsSync3, mkdirSync as mkdirSync3, readdirSync as readdirSync2, readFileSync as readFileSync3, rmdirSync as rmdirSync2, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "node:fs";
-import { dirname as dirname2, join as join3 } from "node:path";
-import { isMap, isScalar, isSeq, parse as parse2, parseDocument as parseDocument2, Scalar } from "yaml";
-
-// src/core/fsops.ts
-import { appendFileSync, existsSync as existsSync2, mkdirSync as mkdirSync2, readdirSync, readFileSync as readFileSync2, rmdirSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
-import { dirname, join as join2, relative } from "node:path";
+  changeWarnings,
+  classifyPath,
+  findLayer,
+  joinDoc,
+  normalizeLinkValue,
+  parseDoc,
+  splitDoc
+} from "./chunk-cttfmfym.js";
 
 // src/core/format.ts
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -70,6 +61,8 @@ function ensureFormat(layer, migrations = MIGRATIONS, current = FORMAT_VERSION) 
 }
 
 // src/core/fsops.ts
+import { appendFileSync, existsSync as existsSync2, mkdirSync as mkdirSync2, readdirSync, readFileSync as readFileSync2, rmdirSync, rmSync, statSync, writeFileSync as writeFileSync2 } from "node:fs";
+import { dirname, join as join2, relative } from "node:path";
 function describe(layers, path) {
   const info = classifyPath(layers, path);
   if (!info)
@@ -208,6 +201,11 @@ ${walk(full, depth + 1)}`;
   };
   return layers.map((l) => walk(l.root, 0)).join("\x00");
 }
+
+// src/core/edit.ts
+import { existsSync as existsSync3, mkdirSync as mkdirSync3, readdirSync as readdirSync2, readFileSync as readFileSync3, rmdirSync as rmdirSync2, rmSync as rmSync2, writeFileSync as writeFileSync3 } from "node:fs";
+import { dirname as dirname2, join as join3 } from "node:path";
+import { isMap, isScalar, isSeq, parse as parse2, parseDocument as parseDocument2, Scalar } from "yaml";
 
 // src/core/managed.ts
 import { parse } from "yaml";

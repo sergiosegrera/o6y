@@ -1,23 +1,23 @@
 #!/usr/bin/env node
 import {
-  LOG_FILE,
-  makeLayers,
-  Store,
-  formatIssues
-} from "./chunk-fh0jaf4t.js";
-import {
-  cacheRoot2
-} from "./chunk-5x828vk5.js";
-import {
-  describe,
   LOG_LINE,
-  Plan
-} from "./chunk-s38bcg3w.js";
+  Plan,
+  describe
+} from "./chunk-be6ws20h.js";
+import {
+  cacheRoot
+} from "./chunk-x46zecnb.js";
+import {
+  LOG_FILE,
+  Store,
+  formatIssues,
+  makeLayers
+} from "./chunk-cttfmfym.js";
 
 // src/dream/state.ts
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
-var dreamsDir2 = (env) => join(cacheRoot2(env), "dreams");
+var dreamsDir = (env) => join(cacheRoot(env), "dreams");
 function writeJson(path, value) {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;
@@ -25,7 +25,7 @@ function writeJson(path, value) {
 `);
   renameSync(tmp, path);
 }
-function readLedger2(dir) {
+function readLedger(dir) {
   try {
     const parsed = JSON.parse(readFileSync(join(dir, "ledger.json"), "utf8"));
     return { sessions: parsed.sessions ?? {} };
@@ -36,7 +36,7 @@ function readLedger2(dir) {
 var writeLedger = (dir, ledger) => writeJson(join(dir, "ledger.json"), ledger);
 var runDir = (dir, id) => join(dir, "runs", id);
 var writeRun = (dir, id, run) => writeJson(join(runDir(dir, id), "run.json"), run);
-function pidAlive2(pid) {
+function pidAlive(pid) {
   try {
     process.kill(pid, 0);
     return true;
@@ -44,10 +44,10 @@ function pidAlive2(pid) {
     return err.code === "EPERM";
   }
 }
-function dreamRunning2(dir) {
+function dreamRunning(dir) {
   try {
     const holder = Number(readFileSync(join(dir, "lock"), "utf8"));
-    return Boolean(holder) && pidAlive2(holder);
+    return Boolean(holder) && pidAlive(holder);
   } catch {
     return false;
   }
@@ -61,12 +61,17 @@ function acquireLock(dir) {
       return () => rmSync(path, { force: true });
     } catch {
       const holder = Number(readFileSync(path, "utf8"));
-      if (holder && pidAlive2(holder))
+      if (holder && pidAlive(holder))
         return;
       rmSync(path, { force: true });
     }
   }
   return;
+}
+function copyStore(from, to) {
+  mkdirSync(to, { recursive: true });
+  if (existsSync(from))
+    cpSync(from, to, { recursive: true });
 }
 function storeFiles(root, dir = root, out = []) {
   let entries;
@@ -91,6 +96,24 @@ var read = (path) => {
     return null;
   }
 };
+function stagedChanged(base, staged) {
+  const files = new Set([...storeFiles(base), ...storeFiles(staged)]);
+  return [...files].some((rel) => read(join(base, rel)) !== read(join(staged, rel)));
+}
+function stagedObjects(base, staged) {
+  const out = { created: [], updated: [] };
+  for (const rel of storeFiles(staged).sort()) {
+    const match = /^([^/.][^/]*\/[^/.][^/]*)\.md$/.exec(rel);
+    if (!match)
+      continue;
+    const before = read(join(base, rel));
+    if (before === null)
+      out.created.push(match[1]);
+    else if (before !== read(join(staged, rel)))
+      out.updated.push(match[1]);
+  }
+  return out;
+}
 function stagedSources(base, staged) {
   const out = new Map;
   const added = (read(join(staged, LOG_FILE)) ?? "").slice((read(join(base, LOG_FILE)) ?? "").length);
@@ -190,7 +213,7 @@ function stagedChanges(base, staged, liveRoot) {
   return out;
 }
 function recordSessions(dir, run, leaves, at) {
-  const ledger = readLedger2(dir);
+  const ledger = readLedger(dir);
   for (const [session, leaf] of Object.entries(leaves))
     ledger.sessions[session] = { leaf, at, run };
   writeLedger(dir, ledger);
@@ -205,7 +228,7 @@ function refreshStaged(run, liveRoot, layers, manyLines) {
   run.review = reviewOf(run.snapshot, run.staged, reasons, pinned, manyLines);
   run.changes = stagedChanges(run.snapshot, run.staged, liveRoot);
 }
-function dropStaged2(env, layers, run, ids, manyLines) {
+function dropStaged(env, layers, run, ids, manyLines) {
   const touched = new Set([...run.review?.created ?? [], ...run.review?.updated ?? []].map((o) => o.id).concat(run.review?.deleted ?? []));
   const unknown = ids.filter((id) => !touched.has(id));
   if (unknown.length)
@@ -221,12 +244,12 @@ function dropStaged2(env, layers, run, ids, manyLines) {
     }
   }
   refreshStaged(run, layers[0].root, layers, manyLines);
-  writeRun(dreamsDir2(env), run.id, run);
+  writeRun(dreamsDir(env), run.id, run);
   const issues = Store.load(makeLayers(run.staged)).issues.filter((i) => i.severity !== "info" && ids.some((id) => i.message.includes(id)));
   return issues.map((i) => i.message);
 }
-function applyRun2(env, layers, run, now = new Date) {
-  const dir = dreamsDir2(env);
+function applyRun(env, layers, run, now = new Date) {
+  const dir = dreamsDir(env);
   const release = acquireLock(dir);
   if (!release)
     throw new Error("a dream is running; apply when it has finished");
@@ -250,8 +273,8 @@ function applyRun2(env, layers, run, now = new Date) {
     release();
   }
 }
-function discardRun2(env, run, retry, now = new Date) {
-  const dir = dreamsDir2(env);
+function discardRun(env, run, retry, now = new Date) {
+  const dir = dreamsDir(env);
   if (!retry)
     recordSessions(dir, run.id, run.leaves ?? {}, now.toISOString());
   rmSync(run.staged, { recursive: true, force: true });
@@ -263,4 +286,4 @@ function discardRun2(env, run, retry, now = new Date) {
   return run;
 }
 
-export { dreamsDir2, readLedger2, pidAlive2, dreamRunning2, dropStaged2, applyRun2, discardRun2 };
+export { dreamsDir, readLedger, writeLedger, runDir, writeRun, pidAlive, dreamRunning, acquireLock, copyStore, stagedChanged, stagedObjects, applyStaged, unmanaged, reviewOf, stagedChanges, recordSessions, outcome, dropStaged, applyRun, discardRun };

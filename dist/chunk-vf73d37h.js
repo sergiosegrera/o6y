@@ -1,41 +1,42 @@
 #!/usr/bin/env node
 import {
-  RESERVED_FIELDS,
-  LOG_FILE,
-  Store
-} from "./chunk-fh0jaf4t.js";
+  dreamInvocation
+} from "./chunk-xd8mr2b0.js";
+import {
+  dreamStatus,
+  readRuns
+} from "./chunk-0s09w1y2.js";
+import"./chunk-kvedd0nk.js";
 import {
   displayPath
-} from "./chunk-y40aejzh.js";
+} from "./chunk-bfggpd48.js";
 import {
-  semanticUnavailable2,
-  embedderFor2,
-  cacheRoot2,
-  syncIndex2,
-  search2
-} from "./chunk-5x828vk5.js";
-import {
-  graphData2,
-  adjacency2
-} from "./chunk-pcsgytez.js";
+  dreamRunning,
+  dreamsDir
+} from "./chunk-5qk0g301.js";
 import {
   LOG_LINE,
   storeSignature
-} from "./chunk-s38bcg3w.js";
+} from "./chunk-be6ws20h.js";
 import {
-  dreamsDir2,
-  dreamRunning2
-} from "./chunk-xp699xym.js";
-import {
-  readRuns2,
-  dreamStatus2
-} from "./chunk-ct1pydgz.js";
-import {
-  dreamInvocation
-} from "./chunk-vfbt3qes.js";
+  adjacency,
+  graphData
+} from "./chunk-xnbrs8za.js";
 import {
   neighbors
-} from "./chunk-ppcshjpm.js";
+} from "./chunk-cy6byj21.js";
+import {
+  cacheRoot,
+  embedderFor,
+  search,
+  semanticUnavailable,
+  syncIndex
+} from "./chunk-x46zecnb.js";
+import {
+  LOG_FILE,
+  RESERVED_FIELDS,
+  Store
+} from "./chunk-cttfmfym.js";
 
 // src/viewer/run.tsx
 import { spawnSync } from "node:child_process";
@@ -163,17 +164,17 @@ function treeRows(store, query = "", open = "all") {
     const objects = (byType.get(type.name) ?? []).sort((a, b) => a.id.localeCompare(b.id));
     if (query && !objects.length)
       continue;
-    const open = isOpen(typeKey(type.name));
-    rows.push({ kind: "type", name: type.name, count: objects.length, layer: type.layer.name, open });
-    if (open)
+    const open2 = isOpen(typeKey(type.name));
+    rows.push({ kind: "type", name: type.name, count: objects.length, layer: type.layer.name, open: open2 });
+    if (open2)
       for (const obj of objects)
         rows.push({ kind: "object", id: obj.id, obj });
   }
   const wanted = [...store.wanted].filter(([id]) => matches(store, id, query)).sort(([a], [b]) => a.localeCompare(b));
   if (wanted.length) {
-    const open = isOpen(WANTED_KEY);
-    rows.push({ kind: "wanted-header", count: wanted.length, open });
-    if (open)
+    const open2 = isOpen(WANTED_KEY);
+    rows.push({ kind: "wanted-header", count: wanted.length, open: open2 });
+    if (open2)
       for (const [id, sources] of wanted)
         rows.push({ kind: "wanted", id, sources: sources.size });
   }
@@ -579,10 +580,10 @@ function renderActivityPage(store, row, width, changed) {
   if (row.kind === "entry") {
     const { object, type } = activityTarget(store, row);
     const page = object ? renderPage(store, object, width, changed) : type ? renderTypePage(store, type, width) : undefined;
-    const head = [describeEntry(row.entry), []];
+    const head2 = [describeEntry(row.entry), []];
     if (page)
-      return { lines: [...head, ...page.lines], links: page.links, linkLines: page.linkLines.map((n) => n + head.length) };
-    lines.push(...head, [{ text: row.entry.target, bold: true, color: "red" }]);
+      return { lines: [...head2, ...page.lines], links: page.links, linkLines: page.linkLines.map((n) => n + head2.length) };
+    lines.push(...head2, [{ text: row.entry.target, bold: true, color: "red" }]);
     lines.push([{ text: row.entry.action === "delete" || !store.objects.has(row.entry.target) ? "No longer in the store." : "", dim: true }]);
     return { lines, links, linkLines };
   }
@@ -998,16 +999,16 @@ function App({ layers, initial, onEdit }) {
       const next = Store.load(layers);
       const now = Date.now();
       const fresh = [];
-      for (const [id, obj] of next.objects) {
-        const before = prev.objects.get(id);
+      for (const [id2, obj] of next.objects) {
+        const before = prev.objects.get(id2);
         if (!before || before.mtimeMs !== obj.mtimeMs)
-          fresh.push(id);
+          fresh.push(id2);
       }
       if (fresh.length) {
         setChanged((m) => {
           const copy = new Map([...m].filter(([, t]) => now - t < CHANGED_MS));
-          for (const id of fresh)
-            copy.set(id, now);
+          for (const id2 of fresh)
+            copy.set(id2, now);
           return copy;
         });
       }
@@ -1057,7 +1058,7 @@ function App({ layers, initial, onEdit }) {
   const activity = useMemo(() => readActivity(layers), [layers, loadedAt]);
   const actRows = useMemo(() => activityRows(activity, activityOpen), [activity, activityOpen]);
   const hits = results?.hits ?? [];
-  const adj = useMemo(() => adjacency2(graphData2(store)), [store]);
+  const adj = useMemo(() => adjacency(graphData(store)), [store]);
   const [graphCenter, setGraphCenter] = useState(initial.graphCenter);
   const [graphBack, setGraphBack] = useState([]);
   const [graphDepth, setGraphDepth] = useState(1);
@@ -1073,7 +1074,7 @@ function App({ layers, initial, onEdit }) {
     if (view !== "dreams")
       return;
     const timer = setInterval(() => {
-      const running = dreamRunning2(dreamsDir2(process.env));
+      const running = dreamRunning(dreamsDir(process.env));
       if (running || dreamWasRunning.current)
         setDreamTick((n) => n + 1);
       dreamWasRunning.current = running;
@@ -1099,7 +1100,7 @@ function App({ layers, initial, onEdit }) {
       reload();
     });
   };
-  const dreams = useMemo(() => view === "dreams" ? readRuns2(process.env) : [], [view, loadedAt, dreamTick]);
+  const dreams = useMemo(() => view === "dreams" ? readRuns(process.env) : [], [view, loadedAt, dreamTick]);
   const sideKeys = useMemo(() => view === "activity" ? actRows.map((r) => r.key) : view === "dreams" ? dreams.map((d) => d.id) : view === "graph" ? graphNodes.map((n) => n.id) : view === "search" ? hits.map((h) => h.key) : [], [view, actRows, dreams, graphNodes, hits]);
   const sideIndex = sideKey && sideKeys.includes(sideKey) ? sideKeys.indexOf(sideKey) : sideKeys.length ? 0 : -1;
   const sideSelected = sideIndex >= 0 ? sideKeys[sideIndex] : undefined;
@@ -1159,15 +1160,15 @@ function App({ layers, initial, onEdit }) {
     setFocus("list");
     setSideKey(undefined);
     setScroll(0);
-    const why = semanticUnavailable2(store, process.env);
+    const why = semanticUnavailable(store, process.env);
     if (why)
       return setResults({ query: q, status: "error", message: why, hits: [] });
     setResults({ query: q, status: "running", hits: [] });
     try {
-      const embedder = embedderFor2(store, process.env);
-      const cache = cacheRoot2(process.env);
-      await syncIndex2(store, embedder, cache);
-      const found = await search2(store, embedder, cache, q, { limit: SEARCH_LIMIT, minScore: 0 });
+      const embedder = embedderFor(store, process.env);
+      const cache = cacheRoot(process.env);
+      await syncIndex(store, embedder, cache);
+      const found = await search(store, embedder, cache, q, { limit: SEARCH_LIMIT, minScore: 0 });
       if (run !== searchRun.current)
         return;
       setResults({ query: q, status: "done", hits: found.map((h) => ({ key: h.obj.id, id: h.obj.id, score: h.score, similarity: h.similarity })) });
@@ -1278,15 +1279,15 @@ function App({ layers, initial, onEdit }) {
         return;
       }
       if (/^[jk]+$/.test(input) && focus === "list") {
-        const delta = [...input].reduce((n, ch) => n + (ch === "j" ? 1 : -1), 0);
+        const delta = [...input].reduce((n2, ch) => n2 + (ch === "j" ? 1 : -1), 0);
         return view === "browse" ? moveList(delta) : moveSide(delta);
       }
       input = input[input.length - 1];
     }
     if (input === "R" && view === "dreams") {
-      if (dreamLive || dreamRunning2(dreamsDir2(process.env)))
+      if (dreamLive || dreamRunning(dreamsDir(process.env)))
         return setDreamNote("a dream is already running");
-      const { unprocessed, here } = dreamStatus2(process.cwd(), process.env);
+      const { unprocessed, here } = dreamStatus(process.cwd(), process.env);
       if (!unprocessed)
         return setDreamNote("no sessions are waiting");
       return setDreamAsk(newDreamForm(unprocessed, here));
@@ -1363,21 +1364,21 @@ function App({ layers, initial, onEdit }) {
       return moveList(end ? keys.length : -keys.length);
     }
     if (view === "activity" && focus === "list" && actRow) {
-      const toggleAct = (key, on) => setActivityOpen((prev) => {
+      const toggleAct = (key2, on) => setActivityOpen((prev) => {
         const next = new Set(prev);
         if (on)
-          next.add(key);
+          next.add(key2);
         else
-          next.delete(key);
+          next.delete(key2);
         return next;
       });
-      const header = actRow.kind === "entry" ? undefined : actRow;
-      if (header && (key.return || key.rightArrow || input === "l" || input === " ")) {
-        if (!header.open)
-          return toggleAct(header.key, true);
+      const header2 = actRow.kind === "entry" ? undefined : actRow;
+      if (header2 && (key.return || key.rightArrow || input === "l" || input === " ")) {
+        if (!header2.open)
+          return toggleAct(header2.key, true);
         if (key.rightArrow || input === "l")
           return moveSide(1);
-        return toggleAct(header.key, false);
+        return toggleAct(header2.key, false);
       }
       const parent = () => {
         const at = actRows.indexOf(actRow);
@@ -1388,8 +1389,8 @@ function App({ layers, initial, onEdit }) {
         return;
       };
       if (key.leftArrow || input === "h") {
-        if (header?.open)
-          return toggleAct(header.key, false);
+        if (header2?.open)
+          return toggleAct(header2.key, false);
         const up = parent();
         if (up)
           moveSide(sideKeys.indexOf(up) - sideIndex);
@@ -1442,17 +1443,17 @@ function App({ layers, initial, onEdit }) {
       return;
     }
     if (focus === "list" && !filter) {
-      const header = row && (row.kind === "type" || row.kind === "wanted-header") ? row : undefined;
-      const headerKey = header ? rowKey(header) : undefined;
-      if (header && headerKey && (key.return || key.rightArrow || input === "l" || input === " ")) {
-        if (!header.open)
+      const header2 = row && (row.kind === "type" || row.kind === "wanted-header") ? row : undefined;
+      const headerKey = header2 ? rowKey(header2) : undefined;
+      if (header2 && headerKey && (key.return || key.rightArrow || input === "l" || input === " ")) {
+        if (!header2.open)
           return toggle(headerKey, true);
         if (key.rightArrow || input === "l")
           return moveList(1);
         return toggle(headerKey, false);
       }
       if (key.leftArrow || input === "h") {
-        if (header && headerKey && header.open)
+        if (header2 && headerKey && header2.open)
           return toggle(headerKey, false);
         const parent = selectedKey ? parentKey(store, selectedKey) : undefined;
         if (parent)
@@ -1744,7 +1745,7 @@ function App({ layers, initial, onEdit }) {
     } else if (view === "dreams") {
       lines = dreams.map((d) => ({ key: d.id, line: dreamLine(d, w, selectedOnList && d.id === sideSelected) }));
       selectedLine = Math.max(0, dreams.findIndex((d) => d.id === sideSelected));
-      const note = dreams[0]?.status === "running" ? undefined : dreamLive || dreamRunning2(dreamsDir2(process.env)) ? " dreaming…" : dreamNote;
+      const note = dreams[0]?.status === "running" ? undefined : dreamLive || dreamRunning(dreamsDir(process.env)) ? " dreaming…" : dreamNote;
       if (note) {
         lines.unshift({ key: "note", line: [{ text: truncate(note, w), color: "yellow" }] });
         selectedLine += 1;
@@ -1846,44 +1847,44 @@ function App({ layers, initial, onEdit }) {
                 dimColor: true,
                 children: filter ? " no matches" : " empty store"
               }) : null,
-              visibleRows.map((row, i) => {
+              visibleRows.map((row2, i) => {
                 const index = listStart + i;
                 const w = leftWidth;
                 const isCursor = index === cursor;
-                if (row.kind === "type" || row.kind === "wanted-header") {
-                  const name = row.kind === "type" ? row.name : "wanted";
-                  const label = `${row.open ? "▾" : "▸"} ${name}`;
-                  const count = ` ${row.count}`;
+                if (row2.kind === "type" || row2.kind === "wanted-header") {
+                  const name2 = row2.kind === "type" ? row2.name : "wanted";
+                  const label2 = `${row2.open ? "▾" : "▸"} ${name2}`;
+                  const count2 = ` ${row2.count}`;
                   return /* @__PURE__ */ jsxs(Text, {
                     wrap: "truncate",
                     children: [
                       /* @__PURE__ */ jsx(Text, {
                         bold: true,
-                        color: row.kind === "type" ? "magenta" : "red",
+                        color: row2.kind === "type" ? "magenta" : "red",
                         inverse: isCursor && focus === "list",
-                        children: label
+                        children: label2
                       }),
                       /* @__PURE__ */ jsx(Text, {
-                        children: " ".repeat(Math.max(1, w - label.length - count.length))
+                        children: " ".repeat(Math.max(1, w - label2.length - count2.length))
                       }),
                       /* @__PURE__ */ jsx(Text, {
                         dimColor: true,
-                        children: count
+                        children: count2
                       })
                     ]
-                  }, rowKey(row));
+                  }, rowKey(row2));
                 }
-                const label = row.kind === "object" ? row.id.slice(row.id.indexOf("/") + 1) : row.id;
+                const label = row2.kind === "object" ? row2.id.slice(row2.id.indexOf("/") + 1) : row2.id;
                 const marks = [];
-                if (row.kind === "object") {
-                  if (changedIds.has(row.id))
+                if (row2.kind === "object") {
+                  if (changedIds.has(row2.id))
                     marks.push({ t: "•", c: "green" });
-                  if (row.obj.pinned)
+                  if (row2.obj.pinned)
                     marks.push({ t: "★", c: "yellow" });
-                  if (store.issuesFor(row.obj.path).some((x) => x.severity === "error"))
+                  if (store.issuesFor(row2.obj.path).some((x) => x.severity === "error"))
                     marks.push({ t: "!", c: "red" });
                 }
-                const count = row.kind === "object" ? store.backlinks.get(row.id)?.size ?? 0 : row.sources;
+                const count = row2.kind === "object" ? store.backlinks.get(row2.id)?.size ?? 0 : row2.sources;
                 const right = count ? ` ←${count}` : "";
                 const marksWidth = marks.length ? marks.length + 1 : 0;
                 const name = truncate(label, w - 3 - right.length - marksWidth);
@@ -1897,7 +1898,7 @@ function App({ layers, initial, onEdit }) {
                     /* @__PURE__ */ jsxs(Text, {
                       inverse: isCursor && focus === "list",
                       bold: isCursor,
-                      color: row.kind === "wanted" ? "red" : isCursor ? "cyan" : undefined,
+                      color: row2.kind === "wanted" ? "red" : isCursor ? "cyan" : undefined,
                       children: [
                         " ",
                         name,
@@ -1916,7 +1917,7 @@ function App({ layers, initial, onEdit }) {
                       children: right
                     })
                   ]
-                }, `o:${row.id}`);
+                }, `o:${row2.id}`);
               })
             ]
           }),

@@ -1,24 +1,24 @@
 #!/usr/bin/env node
 import {
-  canonicalPath
-} from "./chunk-fh0jaf4t.js";
-import {
-  dreamsDir2,
-  readLedger2,
-  pidAlive2,
-  dreamRunning2
-} from "./chunk-xp699xym.js";
-import {
-  sessionsRoot,
   listTranscripts,
-  pendingPart
-} from "./chunk-52syby8b.js";
+  pendingPart,
+  sessionsRoot
+} from "./chunk-kvedd0nk.js";
+import {
+  dreamRunning,
+  dreamsDir,
+  pidAlive,
+  readLedger
+} from "./chunk-5qk0g301.js";
+import {
+  canonicalPath
+} from "./chunk-cttfmfym.js";
 
 // src/dream/status.ts
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-function findRun2(env, id, staged = false) {
-  const runs = readRuns2(env);
+function findRun(env, id, staged = false) {
+  const runs = readRuns(env);
   const run = id ? runs.find((r) => r.id === id) ?? runs.find((r) => r.id.startsWith(id)) : staged ? runs.find((r) => r.status === "staged") : runs.find((r) => r.status !== "running");
   if (!run)
     throw new Error(id ? `no dream \`${id}\`` : staged ? "no dream is staged for review" : "no dreams yet");
@@ -26,7 +26,7 @@ function findRun2(env, id, staged = false) {
     throw new Error(`dream ${run.id} is ${run.status}, not staged`);
   return run;
 }
-function formatRun2(run) {
+function formatRun(run) {
   if (run.status === "nothing")
     return "o6y dream: no unprocessed sessions.";
   if (run.status === "dry-run")
@@ -65,7 +65,7 @@ function formatRun2(run) {
   return lines.join(`
 `);
 }
-function parseSince2(value, now) {
+function parseSince(value, now) {
   const age = /^([1-9]\d*)([dw])$/.exec(value);
   if (age)
     return new Date(now.getTime() - Number(age[1]) * (age[2] === "w" ? 7 : 1) * 86400000).toISOString();
@@ -94,10 +94,10 @@ function forcedSessions(sessionsDir, wanted, exclude) {
     return part;
   });
 }
-function findUnprocessed2(opts) {
+function findUnprocessed(opts) {
   if (opts.sessions?.length)
     return forcedSessions(opts.sessionsDir, opts.sessions, opts.excludeSession);
-  const ledger = readLedger2(dreamsDir2(opts.env));
+  const ledger = readLedger(dreamsDir(opts.env));
   const out = [];
   for (const transcript of listTranscripts(opts.sessionsDir)) {
     if (transcript.id === opts.excludeSession)
@@ -112,8 +112,8 @@ function findUnprocessed2(opts) {
   }
   return out;
 }
-function readRuns2(env) {
-  const root = join(dreamsDir2(env), "runs");
+function readRuns(env) {
+  const root = join(dreamsDir(env), "runs");
   let ids;
   try {
     ids = readdirSync(root);
@@ -124,7 +124,7 @@ function readRuns2(env) {
   for (const id of ids) {
     try {
       const run = JSON.parse(readFileSync(join(root, id, "run.json"), "utf8"));
-      if (run.status === "running" && !(run.pid && pidAlive2(run.pid))) {
+      if (run.status === "running" && !(run.pid && pidAlive(run.pid))) {
         run.status = "aborted";
         run.error = "the process running this dream ended before it finished; nothing was applied";
       }
@@ -133,19 +133,19 @@ function readRuns2(env) {
   }
   return runs.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
 }
-function dreamStatus2(cwd, env) {
+function dreamStatus(cwd, env) {
   const sessionsDir = sessionsRoot(env);
-  const pending = findUnprocessed2({ env, sessionsDir, cwd });
+  const pending = findUnprocessed({ env, sessionsDir, cwd });
   const here = canonicalPath(cwd);
   return {
     unprocessed: pending.length,
     here: pending.filter((p) => canonicalPath(p.transcript.cwd) === here).length,
-    running: dreamRunning2(dreamsDir2(env)),
-    staged: readRuns2(env).find((r) => r.status === "staged"),
-    last: readRuns2(env).find((r) => r.status !== "running")
+    running: dreamRunning(dreamsDir(env)),
+    staged: readRuns(env).find((r) => r.status === "staged"),
+    last: readRuns(env).find((r) => r.status !== "running")
   };
 }
-function formatStatus2(s) {
+function formatStatus(s) {
   const noun = s.unprocessed === 1 ? "session" : "sessions";
   const lines = [s.unprocessed ? `${s.unprocessed} unprocessed ${noun} (${s.here} from this directory). Run /o6y-dream in pi to process them.` : "No unprocessed sessions."];
   if (s.running)
@@ -161,4 +161,4 @@ function formatStatus2(s) {
 `);
 }
 
-export { findRun2, formatRun2, parseSince2, findUnprocessed2, readRuns2, dreamStatus2, formatStatus2 };
+export { findRun, formatRun, parseSince, findUnprocessed, readRuns, dreamStatus, formatStatus };

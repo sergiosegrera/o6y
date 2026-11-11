@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 import {
-  normalizeLinkValue,
-  describeField,
-  SCHEMA_FILE,
   INDEX_FILE,
-  formatIssues
-} from "./chunk-fh0jaf4t.js";
+  SCHEMA_FILE,
+  describeField,
+  formatIssues,
+  normalizeLinkValue
+} from "./chunk-cttfmfym.js";
 
 // src/core/render.ts
 import { homedir } from "node:os";

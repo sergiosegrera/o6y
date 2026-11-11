@@ -1,48 +1,6 @@
 #!/usr/bin/env node
-
-// src/core/store.ts
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
-import { basename, dirname, join, relative, resolve, sep } from "node:path";
-
-// src/core/frontmatter.ts
-import { parse } from "yaml";
-var FENCE = /^---[ \t]*\r?\n([\s\S]*?)\r?\n?---[ \t]*(?:\r?\n|$)/;
-function parseDoc(text) {
-  const match = FENCE.exec(text);
-  if (!match)
-    return { data: undefined, body: text };
-  const body = text.slice(match[0].length);
-  const raw = match[1] ?? "";
-  if (raw.trim() === "")
-    return { data: {}, body };
-  try {
-    const data = parse(raw);
-    if (data === null || data === undefined)
-      return { data: {}, body };
-    if (typeof data !== "object" || Array.isArray(data)) {
-      return { data: undefined, body, error: "frontmatter must be a YAML mapping (key: value pairs)" };
-    }
-    return { data, body };
-  } catch (err) {
-    const message = err instanceof Error ? err.message.split(`
-`)[0] : String(err);
-    return { data: undefined, body, error: `invalid YAML frontmatter: ${message}` };
-  }
-}
-function splitDoc(text) {
-  const match = FENCE.exec(text);
-  if (!match)
-    return { frontmatter: undefined, body: text };
-  return { frontmatter: match[1] ?? "", body: text.slice(match[0].length) };
-}
-function joinDoc(frontmatter, body) {
-  const fm = frontmatter.endsWith(`
-`) ? frontmatter : `${frontmatter}
-`;
-  return `---
-${fm}---
-${body}`;
-}
+import { createRequire } from "node:module";
+var __require = /* @__PURE__ */ createRequire(import.meta.url);
 
 // src/core/links.ts
 var NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -89,6 +47,46 @@ function normalizeLinkValue(value) {
     return out;
   }
   return;
+}
+
+// src/core/frontmatter.ts
+import { parse } from "yaml";
+var FENCE = /^---[ \t]*\r?\n([\s\S]*?)\r?\n?---[ \t]*(?:\r?\n|$)/;
+function parseDoc(text) {
+  const match = FENCE.exec(text);
+  if (!match)
+    return { data: undefined, body: text };
+  const body = text.slice(match[0].length);
+  const raw = match[1] ?? "";
+  if (raw.trim() === "")
+    return { data: {}, body };
+  try {
+    const data = parse(raw);
+    if (data === null || data === undefined)
+      return { data: {}, body };
+    if (typeof data !== "object" || Array.isArray(data)) {
+      return { data: undefined, body, error: "frontmatter must be a YAML mapping (key: value pairs)" };
+    }
+    return { data, body };
+  } catch (err) {
+    const message = err instanceof Error ? err.message.split(`
+`)[0] : String(err);
+    return { data: undefined, body, error: `invalid YAML frontmatter: ${message}` };
+  }
+}
+function splitDoc(text) {
+  const match = FENCE.exec(text);
+  if (!match)
+    return { frontmatter: undefined, body: text };
+  return { frontmatter: match[1] ?? "", body: text.slice(match[0].length) };
+}
+function joinDoc(frontmatter, body) {
+  const fm = frontmatter.endsWith(`
+`) ? frontmatter : `${frontmatter}
+`;
+  return `---
+${fm}---
+${body}`;
 }
 
 // src/core/schema.ts
@@ -444,6 +442,8 @@ function checkValue(value, field) {
 }
 
 // src/core/store.ts
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 var SCHEMA_FILE = ".schema.md";
 var INDEX_FILE = "index.md";
 var LOG_FILE = "log.md";
@@ -805,4 +805,4 @@ ${list.map((i) => `  - [${i.severity}] ${i.message}`).join(`
 `);
 }
 
-export { parseDoc, splitDoc, joinDoc, parseId, normalizeLinkValue, RESERVED_FIELDS, describeField, SCHEMA_FILE, INDEX_FILE, LOG_FILE, canonicalPath, makeLayers, findLayer, classifyPath, Store, pinnedCost, blockingIssues, changeWarnings, formatIssues };
+export { __require, parseDoc, splitDoc, joinDoc, parseId, normalizeLinkValue, RESERVED_FIELDS, describeField, SCHEMA_FILE, INDEX_FILE, LOG_FILE, canonicalPath, makeLayers, findLayer, classifyPath, Store, pinnedCost, blockingIssues, changeWarnings, formatIssues };
