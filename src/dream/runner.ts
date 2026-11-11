@@ -8,10 +8,10 @@ import { join } from "node:path";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { DreamSettings } from "../core/schema.ts";
 import { canonicalPath, makeLayers, Store } from "../core/store.ts";
-import { type DreamRun, findUnprocessed } from "./status.ts";
+import { type DreamRun, findUnprocessed, formatRun, readRuns } from "./status.ts";
 import { ANALYZER_SYSTEM, analyzerPrompt, ORGANIZER_SYSTEM, organizerPrompt, similarObjects, withInstructions } from "./prompts.ts";
-import { acquireLock, applyStaged, copyStore, dreamsDir, readLedger, runDir, stagedChanged, stagedObjects, writeLedger, writeRun } from "./state.ts";
-import { storeTools, transcriptTool } from "./tools.ts";
+import { acquireLock, applyStaged, copyStore, dreamsDir, outcome, readLedger, recordSessions, reviewOf, runDir, stagedChanged, stagedChanges, stagedObjects, writeRun } from "./state.ts";
+import { type Proposal, storeTools, transcriptTool } from "./tools.ts";
 import { paginate, renderEntries } from "./transcript.ts";
 
 export type AgentRunner = (request: {
@@ -38,6 +38,8 @@ export interface DreamOptions {
   /** Read these sessions in full even if already processed; other filters don't apply. */
   sessions?: string[];
   dryRun?: boolean;
+  /** Stop before applying and keep the staged copy for `o6y dream apply`; `settings.review` does the same. */
+  review?: boolean;
   settings: DreamSettings;
   agent: AgentRunner;
   signal?: AbortSignal;
@@ -45,7 +47,7 @@ export interface DreamOptions {
   now?: () => Date;
 }
 
-export { type DreamRun, findUnprocessed };
+export { type DreamRun, findUnprocessed, formatRun };
 
 export async function runDream(opts: DreamOptions): Promise<DreamRun> {
   const now = opts.now ?? (() => new Date());
@@ -65,12 +67,17 @@ export async function runDream(opts: DreamOptions): Promise<DreamRun> {
   }
 
   const dir = dreamsDir(opts.env);
+  // Its sessions aren't recorded as read until it is applied, so another dream would read them twice.
+  const waiting = readRuns(opts.env).find((r) => r.status === "staged");
+  if (waiting) throw new Error(`dream ${waiting.id} is staged for review; run \`o6y dream apply\` or \`o6y dream discard\` first`);
   const release = acquireLock(dir);
   if (!release) throw new Error("another dream is already running");
   const root = runDir(dir, id);
   const staged = join(root, "staging");
   const base = join(root, "base");
   run.snapshot = base;
+  const reviewing = Boolean(opts.review || opts.settings.review);
+  let keepStaged = false;
   /** Saved after every step, so the viewer can follow a dream from another process. */
   const progress = (step: string) => {
     run.step = step;
@@ -94,6 +101,9 @@ export async function runDream(opts: DreamOptions): Promise<DreamRun> {
     const instructed = (system: string) => withInstructions(system, opts.settings.instructions, guidance);
     const ledger = readLedger(dir);
     const leaves = new Map<string, string>();
+    const { protected: guarded, maxNewObjects, maxAddedLines } = opts.settings;
+    const proposals: Proposal[] = [];
+    const reasons = new Map<string, string>();
 
     for (const [i, part] of chosen.entries()) {
       opts.signal?.throwIfAborted();
@@ -102,6 +112,8 @@ export async function runDream(opts: DreamOptions): Promise<DreamRun> {
       const record = { id: transcript.id, file: transcript.file, cwd: transcript.cwd, ok: false, summary: "" };
       run.sessions.push(record);
       progress(`session ${i + 1}/${chosen.length}`);
+      /** Per session, so each one gets its own allowance of new objects. */
+      const created = new Map<string, string>();
       try {
         const result = await opts.agent({
           role: "analyzer",
@@ -113,8 +125,10 @@ export async function runDream(opts: DreamOptions): Promise<DreamRun> {
             cwd: transcript.cwd,
             pages: pages.length,
             resumed: !opts.sessions?.length && Boolean(ledger.sessions[transcript.id]),
+            maxNewObjects,
+            protected: guarded,
           }),
-          tools: [...storeTools(layers, `pi:${transcript.id}`), transcriptTool(pages)],
+          tools: [...storeTools(layers, `pi:${transcript.id}`, { protected: guarded, proposals, maxNewObjects, maxAddedLines, created }), transcriptTool(pages)],
           model: models.analyzer,
           thinking: opts.settings.thinking,
           signal: opts.signal,
@@ -127,6 +141,7 @@ export async function runDream(opts: DreamOptions): Promise<DreamRun> {
         opts.signal?.throwIfAborted();
         record.summary = `failed: ${err instanceof Error ? err.message : err}`;
       }
+      for (const [object, reason] of created) reasons.set(object, reason);
     }
 
     const succeeded = run.sessions.filter((s) => s.ok).length;
@@ -139,8 +154,8 @@ export async function runDream(opts: DreamOptions): Promise<DreamRun> {
         const result = await opts.agent({
           role: "organizer",
           system: instructed(ORGANIZER_SYSTEM),
-          prompt: organizerPrompt(succeeded, changed, similarObjects(Store.load(layers).objects.values(), [...changed.created, ...changed.updated])),
-          tools: storeTools(layers),
+          prompt: organizerPrompt(succeeded, changed, similarObjects(Store.load(layers).objects.values(), [...changed.created, ...changed.updated]), reasons, guarded),
+          tools: storeTools(layers, undefined, { protected: guarded, proposals }),
           model: models.organizer,
           thinking: opts.settings.thinking,
           signal: opts.signal,
@@ -153,19 +168,27 @@ export async function runDream(opts: DreamOptions): Promise<DreamRun> {
       }
     }
 
-    progress("applying");
+    if (proposals.length) run.proposals = proposals;
     const liveLayers = makeLayers(live);
-    const result = applyStaged(liveLayers, liveLayers[0]!, base, staged);
-    run.changes = result.changes;
-    run.conflicts = result.conflicts;
-    run.error = result.error;
+    const pinned = new Set([...Store.load(layers).objects.values()].filter((o) => o.pinned).map((o) => o.id));
+    run.review = reviewOf(base, staged, reasons, pinned, maxAddedLines);
+    const read = Object.fromEntries(leaves);
 
-    if (!result.error) {
-      const at = now().toISOString();
-      for (const [sessionId, leaf] of leaves) ledger.sessions[sessionId] = { leaf, at, run: id };
-      writeLedger(dir, ledger);
+    if (reviewing && succeeded > 0) {
+      run.changes = stagedChanges(base, staged, live);
+      run.staged = staged;
+      run.leaves = read;
+      run.status = "staged";
+      keepStaged = true;
+    } else {
+      progress("applying");
+      const result = applyStaged(liveLayers, liveLayers[0]!, base, staged);
+      run.changes = result.changes;
+      run.conflicts = result.conflicts;
+      run.error = result.error;
+      if (!result.error) recordSessions(dir, id, read, now().toISOString());
+      run.status = outcome(run);
     }
-    run.status = succeeded === 0 ? "failed" : succeeded < chosen.length || result.error || run.organizer?.ok === false ? "partial" : "done";
   } catch (err) {
     if (!opts.signal?.aborted) {
       run.status = "failed";
@@ -174,7 +197,7 @@ export async function runDream(opts: DreamOptions): Promise<DreamRun> {
     }
     run.status = "aborted";
   } finally {
-    rmSync(staged, { recursive: true, force: true });
+    if (!keepStaged) rmSync(staged, { recursive: true, force: true });
     run.finishedAt = now().toISOString();
     delete run.pid;
     delete run.step;
@@ -182,19 +205,4 @@ export async function runDream(opts: DreamOptions): Promise<DreamRun> {
     release();
   }
   return run;
-}
-
-export function formatRun(run: DreamRun): string {
-  if (run.status === "nothing") return "o6y dream: no unprocessed sessions.";
-  if (run.status === "dry-run") return `o6y dream: ${run.unprocessed} unprocessed session(s); this run would process ${run.sessions.length}.`;
-  const failed = run.sessions.filter((s) => !s.ok);
-  const lines = [
-    `o6y dream ${run.status}: ${run.sessions.length - failed.length}/${run.sessions.length} session(s), ${run.changes.length} change(s), $${run.cost.toFixed(4)}, ${run.tokens} tokens`,
-    ...run.changes.map((c) => `  ${c.action} ${c.path}`),
-    ...run.conflicts.map((path) => `  kept live version (edited during the dream): ${path}`),
-    ...(run.error ? [`  not applied: ${run.error}`] : []),
-    ...failed.map((s) => `  ${s.id}: ${s.summary}`),
-  ];
-  if (run.snapshot) lines.push(`Store before this dream: ${run.snapshot}`);
-  return lines.join("\n");
 }

@@ -574,7 +574,7 @@ export function renderActivityPage(store: Store, row: ActivityRow, width: number
 
 // ── dreams ───────────────────────────────────────────────────────────────
 
-const DREAM_COLOR: Record<string, string> = { running: "cyan", done: "green", partial: "yellow", aborted: "yellow", failed: "red" };
+const DREAM_COLOR: Record<string, string> = { running: "cyan", staged: "cyan", done: "green", partial: "yellow", aborted: "yellow", failed: "red" };
 const dreamWhen = (run: DreamRun) => new Date(run.startedAt).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
 
 /** One row of the dreams list. */
@@ -639,9 +639,17 @@ export function renderDreamPage(store: Store, run: DreamRun, width: number, deta
   lines.push(dim([`$${run.cost.toFixed(4)}`, ok > 1 && `$${(run.cost / ok).toFixed(4)}/session`, `${shortCount(run.tokens)} tokens`, shortDuration(elapsed)].filter(Boolean).join(" · ")));
   const model = run.models.analyzer === run.models.organizer ? run.models.analyzer || "session model" : `${run.models.analyzer || "session model"} / ${run.models.organizer || "session model"}`;
   lines.push([{ text: truncate(model, width), dim: true }]);
+  if (run.status === "staged") lines.push([{ text: truncate("staged: `o6y dream show`, then `o6y dream apply` or `discard`", width), color: "cyan" }]);
   if (run.error) {
     heading("Not applied");
     wrapped(run.error);
+  }
+  if (run.proposals?.length) {
+    heading(`Needs review (${run.proposals.length}): protected, not changed`);
+    for (const p of run.proposals) {
+      lines.push([{ text: `  ${truncate(p.id, width - 2)}`, color: "yellow" }]);
+      wrapped(p.change, "    ", detail ? Infinity : 3);
+    }
   }
   if (failed.length) {
     heading(`Failed (${failed.length})`);
@@ -654,19 +662,27 @@ export function renderDreamPage(store: Store, run: DreamRun, width: number, deta
 
   heading(`Changes (${run.changes.length})`);
   if (!run.changes.length) lines.push([{ text: running ? "  applied when the dream finishes" : "  none", dim: true }]);
+  if (run.status === "staged" && run.changes.length) lines.push([{ text: "  not applied yet", dim: true }]);
+  const idOf = (path: string) => path.split("/").slice(-2).join("/").replace(/\.md$/, "");
+  const reasons = new Map((run.review?.created ?? []).map((c) => [c.id, c.reason]));
+  const sizes = new Map((run.review?.updated ?? []).map((u) => [u.id, u]));
+  const size = (path: string) => (sizes.get(idOf(path))?.added ?? 0) + (sizes.get(idOf(path))?.removed ?? 0);
+  // The biggest updates first: they are what a review is for.
+  for (const g of byAction) if (g.action === "update") g.changes.sort((a, b) => size(b.path) - size(a.path));
   for (const c of byAction.flatMap((g) => g.changes)) {
-    const id = c.path.split("/").slice(-2).join("/").replace(/\.md$/, "");
+    const id = idOf(c.path);
     const exists = store.objects.has(id);
     if (exists) {
       links.push(id);
       linkLines.push(lines.length);
     }
     const mark = ACTION_MARK[c.action as ActivityAction];
-    const summary = store.objects.get(id)?.summary;
+    const u = c.action === "update" ? sizes.get(id) : undefined;
+    const note = u ? `+${u.added} −${u.removed}${u.flags.length ? ` [${u.flags.join(", ")}]` : ""}` : (c.action === "create" && reasons.get(id)) || store.objects.get(id)?.summary;
     lines.push([
       { text: `  ${mark?.mark ?? "?"} `, color: mark?.color },
-      { text: id, color: exists ? "cyan" : "red" },
-      { text: truncate(summary ? ` — ${summary}` : "", Math.max(0, width - id.length - 4)), dim: true },
+      { text: id, color: exists || run.status === "staged" ? "cyan" : "red" },
+      { text: truncate(note ? ` — ${note}` : "", Math.max(0, width - id.length - 4)), dim: true, ...(u?.flags.length ? { color: "yellow", dim: false } : {}) },
     ]);
   }
   if (run.conflicts.length) {

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import {
   outgoing
-} from "./chunk-nx45tbs7.js";
+} from "./chunk-cy6byj21.js";
 
 // src/core/graph.ts
 var BODY_MAX = 4000;

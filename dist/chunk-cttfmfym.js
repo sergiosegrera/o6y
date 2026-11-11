@@ -115,7 +115,11 @@ var DEFAULT_DREAM = {
   thinking: "",
   maxToolResultChars: 3000,
   pageChars: 30000,
-  instructions: ""
+  instructions: "",
+  maxNewObjects: 2,
+  maxAddedLines: 15,
+  protected: [],
+  review: false
 };
 var THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 function parseDream(raw, errors) {
@@ -155,6 +159,25 @@ function parseDream(raw, errors) {
           out[key] = value.trim();
         else
           errors.push(`${where} must be text`);
+        break;
+      case "maxNewObjects":
+      case "maxAddedLines":
+        if (typeof value === "number" && Number.isInteger(value) && value >= 0)
+          out[key] = value;
+        else
+          errors.push(`${where} must be a whole number, 0 or more`);
+        break;
+      case "protected":
+        if (Array.isArray(value) && value.every((v) => typeof v === "string" && /^[a-z0-9-]+\/(\*|[^/\s]+)$/.test(v)))
+          out[key] = value;
+        else
+          errors.push(`${where} must be a list of object ids (type/slug) or type/*`);
+        break;
+      case "review":
+        if (typeof value === "boolean")
+          out[key] = value;
+        else
+          errors.push(`${where} must be true or false`);
         break;
       default:
         errors.push(`${where} is not a setting (allowed: ${Object.keys(DEFAULT_DREAM).join(", ")})`);

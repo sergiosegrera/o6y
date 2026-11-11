@@ -137,7 +137,7 @@ async function runDreamInPi(ctx: Ctx, o: Record<string, any>): Promise<number> {
   // pi exits 0 on a failed command, so a bad id is caught here.
   if (sessions.length) findUnprocessed({ env: ctx.env, sessionsDir: sessionsRoot(ctx.env), cwd: ctx.cwd, excludeSession: ctx.env.O6Y_DREAM_EXCLUDE, sessions });
   if (o.since !== undefined && !parseSince(o.since, new Date())) throw new UsageError("--since needs an age like 30d or 2w, or a date like 2026-10-01");
-  const flags = [o.here && "--here", o.limit && `--limit ${o.limit}`, o.since && `--since ${o.since}`, sessions.length && `--session ${sessions.join(",")}`, o["dry-run"] && "--dry-run"].filter(Boolean);
+  const flags = [o.here && "--here", o.limit && `--limit ${o.limit}`, o.since && `--since ${o.since}`, sessions.length && `--session ${sessions.join(",")}`, o["dry-run"] && "--dry-run", o.review && "--review"].filter(Boolean);
   const previous = readRuns(ctx.env)[0]?.id;
   const { args, env } = dreamInvocation(ctx.layers[0]!.root, flags as string[], ctx.env);
   const res = spawnSync("pi", args, {
@@ -829,12 +829,39 @@ const COMMANDS: Record<string, Command> = {
   },
 
   dream: {
-    usage: "o6y dream [--json]\n       o6y dream run [--here] [--limit N] [--since 30d|DATE] [--session ID]... [--dry-run]   (needs pi on PATH; applies without review)",
-    summary: "show how many sessions are waiting and the last dream, or run a dream",
-    options: { ...JSON_OPT, ...DRY, here: { type: "boolean" }, limit: { type: "string" }, since: { type: "string" }, session: { type: "string", multiple: true } },
-    async run(ctx, [action], o) {
+    usage: [
+      "o6y dream [--json]",
+      "       o6y dream run [--here] [--limit N] [--since 30d|DATE] [--session ID]... [--dry-run] [--review]   (needs pi on PATH; applies at once unless --review or dream.review)",
+      "       o6y dream show [RUN] [--json]   what a dream created, updated and wants reviewed (default: the staged one, else the latest)",
+      "       o6y dream drop ID... · o6y dream apply · o6y dream discard [--retry]   review a staged dream",
+    ].join("\n"),
+    summary: "show waiting sessions and the last dream, run one, or review a staged one",
+    options: { ...JSON_OPT, ...DRY, here: { type: "boolean" }, limit: { type: "string" }, since: { type: "string" }, session: { type: "string", multiple: true }, review: { type: "boolean" }, retry: { type: "boolean" } },
+    async run(ctx, [action, ...rest], o) {
       if (action === "run") return runDreamInPi(ctx, o);
-      if (action) throw new UsageError("expected `o6y dream` or `o6y dream run`");
+      if (action === "show" || action === "apply" || action === "discard" || action === "drop") {
+        const [{ findRun, formatRun, readRuns }, { applyRun, discardRun, dropStaged }] = await Promise.all([import("../dream/status.ts"), import("../dream/state.ts")]);
+        let run;
+        try {
+          if (action === "show") run = findRun(ctx.env, rest[0] ?? readRuns(ctx.env).find((r) => r.status === "staged")?.id);
+          else {
+            run = findRun(ctx.env, undefined, true);
+            if (action === "drop") {
+              if (!rest.length) throw new UsageError("o6y dream drop needs the ids to take out");
+              const left = dropStaged(ctx.env, ctx.layers, run, rest, ctx.load().dream.maxAddedLines);
+              for (const message of left) ctx.err(`o6y: still refers to a dropped object: ${message}`);
+            } else if (action === "apply") run = applyRun(ctx.env, ctx.layers, run);
+            else run = discardRun(ctx.env, run, Boolean(o.retry));
+          }
+        } catch (err) {
+          if (err instanceof UsageError) throw err;
+          ctx.err(`o6y: ${err instanceof Error ? err.message : err}`);
+          return 1;
+        }
+        ctx.out(o.json ? JSON.stringify(run, null, 2) : formatRun(run));
+        return run.error ? 1 : 0;
+      }
+      if (action) throw new UsageError("expected `o6y dream`, or `o6y dream run|show|drop|apply|discard`");
       const { dreamStatus, formatStatus } = await import("../dream/status.ts");
       const status = dreamStatus(ctx.cwd, ctx.env);
       ctx.out(o.json ? JSON.stringify({ ...status, last: status.last ? { id: status.last.id, status: status.last.status, startedAt: status.last.startedAt, changes: status.last.changes.length, cost: status.last.cost } : null }, null, 2) : formatStatus(status));

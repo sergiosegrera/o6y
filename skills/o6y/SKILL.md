@@ -157,7 +157,8 @@ Run it with bash. Every write command validates the whole change before writing 
 | `o6y stats` · `o6y log [--since 2d]` | counts and budgets; recent changes |
 | `o6y prompt [--stats]` | the memory section of your system prompt, or where its budget goes |
 | `o6y export [--format json\|mermaid\|dot]` | dump the store or its link graph |
-| `o6y dream` / `o6y dream run [--here] [--limit N] [--dry-run]` | show waiting sessions and the last dream / run a dream. Only run one when the user asks: it sends past transcripts to the model, costs money, takes minutes and applies without review. Use a long command timeout |
+| `o6y dream` / `o6y dream run [--here] [--limit N] [--dry-run] [--review]` | show waiting sessions and the last dream / run a dream. Only run one when the user asks: it sends past transcripts to the model, costs money, takes minutes and applies without review unless `--review` (or `dream.review`) stages it. Use a long command timeout |
+| `o6y dream show [RUN]` · `o6y dream drop ID...` · `o6y dream apply` · `o6y dream discard [--retry]` | what a dream created (with reasons), updated (by size) and wants reviewed / take objects out of a staged dream / apply it / drop it. Applying and discarding are the user's call |
 | `o6y new <id> --summary S [--set f=v]… [--body B]` | create an object |
 | `o6y set <id> f=v… [--unset f]` | set fields (values are YAML: `true`, `3`, `[a, b]`) |
 | `o6y mv` · `o6y merge` · `o6y rm` · `o6y field` · `o6y type rename` | see Recipes |

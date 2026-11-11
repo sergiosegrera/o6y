@@ -7,11 +7,12 @@ import { bootstrap } from "../src/core/fsops.ts";
 import { DEFAULT_DREAM, parseRootSchema } from "../src/core/schema.ts";
 import { main } from "../src/cli/main.ts";
 import { makeLayers, Store } from "../src/core/store.ts";
-import { parseSince, readRuns } from "../src/dream/status.ts";
+import { formatRun, parseSince, readRuns } from "../src/dream/status.ts";
 import { similarObjects, withInstructions } from "../src/dream/prompts.ts";
-import { renderDreamPage } from "../src/viewer/model.ts";
+import { type Page, plain as plainLine, renderDreamPage } from "../src/viewer/model.ts";
+const plain = (page: Page) => page.lines.map(plainLine).join("\n");
 import { type AgentRunner, findUnprocessed, runDream } from "../src/dream/runner.ts";
-import { dreamsDir, readLedger } from "../src/dream/state.ts";
+import { applyRun, discardRun, dreamsDir, dropStaged, readLedger } from "../src/dream/state.ts";
 import { storeTools } from "../src/dream/tools.ts";
 import { activeBranch, paginate, parseTranscript, pendingPart, renderEntries } from "../src/dream/transcript.ts";
 
@@ -37,7 +38,7 @@ const callTool = (tools: any[], name: string, params: unknown) => tools.find((t)
 /** A fake analyzer that writes one note per transcript; the organizer does nothing. */
 const writer = (seen: string[] = []): AgentRunner => async ({ role, prompt, tools }) => {
   seen.push(role);
-  if (role === "analyzer") await callTool(tools, "store_write", { target: `note/from-${seen.length}`, content: note(prompt) });
+  if (role === "analyzer") await callTool(tools, "store_write", { target: `note/from-${seen.length}`, content: note(prompt), reason: "outlasts the PR" });
   return { text: "ok", cost: 0.01, tokens: 10 };
 };
 
@@ -96,7 +97,7 @@ test("the organizer is told what the dream changed and what looks alike", async 
   let prompt = "";
   await runDream(options(async ({ role, prompt: p, tools }) => {
     if (role === "organizer") prompt = p;
-    else await callTool(tools, "store_write", { target: "note/overflow-menu-locator", content: "---\nsummary: Overflow popover menu locator fails\n---\nNew.\n" });
+    else await callTool(tools, "store_write", { target: "note/overflow-menu-locator", content: "---\nsummary: Overflow popover menu locator fails\n---\nNew.\n", reason: "r" }).catch(() => callTool(tools, "store_write", { target: "note/overflow-menu-locator", content: "---\nsummary: Overflow popover menu locator fails\n---\nNew.\n", reason: "r" }));
     return { text: "ok", cost: 0, tokens: 0 };
   }));
   expect(prompt).toContain("Created (1): note/overflow-menu-locator");
@@ -222,7 +223,7 @@ test("an aborted dream changes nothing", async () => {
   const controller = new AbortController();
   const run = await runDream({
     ...options(async ({ tools }) => {
-      await callTool(tools, "store_write", { target: "note/y", content: note("y") });
+      await callTool(tools, "store_write", { target: "note/y", content: note("y"), reason: "r" });
       controller.abort();
       throw new Error("aborted");
     }),
@@ -238,7 +239,7 @@ test("changes go only to staged stores; live is untouched until the end", async 
   let liveDuring = true;
   await runDream(options(async ({ role, tools }) => {
     if (role === "analyzer") {
-      await callTool(tools, "store_write", { target: "note/z", content: note("z") });
+      await callTool(tools, "store_write", { target: "note/z", content: note("z"), reason: "r" });
       liveDuring = existsSync(join(g, "note/z.md"));
     }
     return { text: "", cost: 0, tokens: 0 };
@@ -365,4 +366,168 @@ test("a CLI dream loads the user's extensions and names its own o6y copy", () =>
   const { args, env: launched } = dreamInvocation("/store", ["--dry-run"], {});
   expect(args).not.toContain("-ne");
   expect(args[args.indexOf("-e") + 1]).toBe(launched.O6Y_EXTENSION!);
+});
+
+const seed = (id: string, content: string) => {
+  mkdirSync(dirname(join(g, `${id}.md`)), { recursive: true });
+  writeFileSync(join(g, `${id}.md`), content);
+};
+const titled = (summary: string, body = "Body.") => `---\nsummary: ${summary}\n---\n${body}\n`;
+
+test("an analyzer's new object needs a reason, and a session creates only so many", async () => {
+  const created = new Map<string, string>();
+  const tools = storeTools(makeLayers(g), "pi:a", { maxNewObjects: 1, created });
+  await expect(callTool(tools, "store_write", { target: "note/one", content: titled("First trap") })).rejects.toThrow("needs `reason`");
+  await expect(callTool(tools, "store_cli", { args: ["new", "note/one", "--summary", "x"] })).rejects.toThrow("store_write");
+  await callTool(tools, "store_write", { target: "note/one", content: titled("First trap"), reason: "  the flag is\nundocumented " });
+  expect([...created]).toEqual([["note/one", "the flag is undocumented"]]);
+  // Its own object can be rewritten; a second one can't be created.
+  await callTool(tools, "store_write", { target: "note/one", content: titled("First trap", "Better.") });
+  await expect(callTool(tools, "store_write", { target: "note/two", content: titled("Second"), reason: "r" })).rejects.toThrow("limit is 1");
+  expect(existsSync(join(g, "note/two.md"))).toBe(false);
+  // The organizer has no such limits.
+  await callTool(storeTools(makeLayers(g)), "store_write", { target: "note/two", content: titled("Second") });
+});
+
+test("a new object that looks like an existing one is sent back once to check it", async () => {
+  seed("note/review-bot-identity", titled("Review bot posts as the deploy account"));
+  const tools = storeTools(makeLayers(g), "pi:a", { maxNewObjects: 2, created: new Map() });
+  const write = () => callTool(tools, "store_write", { target: "note/review-bot", content: titled("Review bot, posts as the deploy account"), reason: "r" });
+  await expect(write()).rejects.toThrow("note/review-bot-identity");
+  expect(existsSync(join(g, "note/review-bot.md"))).toBe(false);
+  await write();
+  expect(existsSync(join(g, "note/review-bot.md"))).toBe(true);
+});
+
+test("an analyzer can't pile lines onto an existing object", async () => {
+  seed("note/x", titled("X", "One."));
+  const tools = storeTools(makeLayers(g), "pi:a", { maxAddedLines: 3 });
+  const many = Array.from({ length: 6 }, (_, i) => `Line ${i}.`).join("\n");
+  await expect(callTool(tools, "store_write", { target: "note/x", content: titled("X", many) })).rejects.toThrow("adds 5 lines");
+  await callTool(tools, "store_edit", { target: "note/x", old_string: "One.", new_string: "One.\nTwo.\nThree." });
+  // Counted from where the session started, not per call.
+  await expect(callTool(tools, "store_edit", { target: "note/x", old_string: "Three.", new_string: "Three.\nFour.\nFive." })).rejects.toThrow("adds 4 lines");
+});
+
+test("a protected object is never changed, and what the dream wanted is kept for review", async () => {
+  seed("runbook/dream-runs", titled("How to review dreams", "Step one."));
+  seed("note/x", titled("X"));
+  session("a", [user("1", null, "x")]);
+  const prompts: string[] = [];
+  const run = await runDream({
+    ...options(async ({ prompt, tools }) => {
+      prompts.push(prompt);
+      await expect(callTool(tools, "store_edit", { target: "runbook/dream-runs", old_string: "Step one.", new_string: "Step zero." })).rejects.toThrow("protected");
+      await expect(callTool(tools, "store_write", { target: "runbook/dream-runs", content: titled("Mine") })).rejects.toThrow("protected");
+      await expect(callTool(tools, "store_cli", { args: ["rm", "runbook/dream-runs"] })).rejects.toThrow("protected");
+      await expect(callTool(tools, "store_cli", { args: ["merge", "note/x", "runbook/dream-runs"] })).rejects.toThrow("protected");
+      expect((await callTool(tools, "store_cli", { args: ["show", "runbook/dream-runs"] })).content[0].text).toContain("Step one.");
+      return { text: "ok", cost: 0, tokens: 0 };
+    }),
+    settings: { ...DEFAULT_DREAM, protected: ["runbook/*"] },
+  });
+  expect(prompts[0]).toContain("Protected, read only: runbook/*");
+  expect(readFileSync(join(g, "runbook/dream-runs.md"), "utf8")).toContain("Step one.");
+  expect(run.proposals).toHaveLength(2);
+  expect(run.proposals![0]).toEqual({ id: "runbook/dream-runs", session: "a", change: "replace:\nStep one.\nwith:\nStep zero." });
+  expect(formatRun(run)).toContain("Needs review (2)");
+  expect(plain(renderDreamPage(Store.load(makeLayers(g)), run, 80))).toContain("Needs review (2)");
+});
+
+test("a run lists new objects with their reasons and updates by size", async () => {
+  seed("note/small", titled("Small", "one"));
+  seed("note/big", `---\nsummary: Big\npinned: true\n---\none\n`);
+  session("a", [user("1", null, "x")]);
+  const run = await runDream(options(async ({ role, prompt, tools }) => {
+    if (role === "organizer") {
+      expect(prompt).toContain("- note/new: nobody documents the flag");
+      return { text: "no changes needed", cost: 0, tokens: 0 };
+    }
+    await callTool(tools, "store_edit", { target: "note/small", old_string: "one", new_string: "two" });
+    await callTool(tools, "store_edit", { target: "note/big", old_string: "one", new_string: "one\ntwo\nthree" });
+    await callTool(tools, "store_write", { target: "note/new", content: titled("New"), reason: "nobody documents the flag" });
+    return { text: "ok", cost: 0, tokens: 0 };
+  }));
+  expect(run.review!.created).toEqual([{ id: "note/new", lines: 4, reason: "nobody documents the flag" }]);
+  expect(run.review!.updated).toEqual([
+    { id: "note/big", added: 2, removed: 0, flags: ["pinned"] },
+    { id: "note/small", added: 1, removed: 1, flags: [] },
+  ]);
+  const text = formatRun(run);
+  expect(text).toContain("  + note/new (4 lines): nobody documents the flag");
+  expect(text.indexOf("note/big +2 -0  [pinned]")).toBeLessThan(text.indexOf("note/small +1 -1"));
+  expect(plain(renderDreamPage(Store.load(makeLayers(g)), run, 100))).toContain("note/new — nobody documents the flag");
+});
+
+test("a reviewed dream changes nothing until it is applied, and objects can be dropped first", async () => {
+  seed("note/x", titled("X", "old"));
+  session("a", [user("1", null, "x")]);
+  const agent: AgentRunner = async ({ role, tools }) => {
+    if (role === "analyzer") {
+      await callTool(tools, "store_write", { target: "note/keep", content: titled("Keep"), reason: "r" });
+      await callTool(tools, "store_write", { target: "note/weak", content: titled("Unrelated thing"), reason: "r" });
+      await callTool(tools, "store_edit", { target: "note/x", old_string: "old", new_string: "new" });
+    }
+    return { text: "ok", cost: 0, tokens: 0 };
+  };
+  const run = await runDream({ ...options(agent), review: true });
+  expect(run.status).toBe("staged");
+  expect(run.changes.map((c) => c.action).sort()).toEqual(["create", "create", "update"]);
+  expect(existsSync(join(g, "note/keep.md"))).toBe(false);
+  expect(readLedger(dreamsDir(env)).sessions).toEqual({});
+  expect(formatRun(run)).toContain("o6y dream apply");
+  await expect(runDream(options(agent))).rejects.toThrow("staged for review");
+
+  const layers = makeLayers(g);
+  expect(() => dropStaged(env, layers, readRuns(env)[0]!, ["note/nope"], 15)).toThrow("doesn't change note/nope");
+  dropStaged(env, layers, readRuns(env)[0]!, ["note/weak", "note/x"], 15);
+  const staged = readRuns(env)[0]!;
+  expect(staged.review!.created.map((c) => c.id)).toEqual(["note/keep"]);
+  expect(staged.review!.updated).toEqual([]);
+
+  const applied = applyRun(env, layers, staged);
+  expect(applied.status).toBe("done");
+  expect(existsSync(join(g, "note/keep.md"))).toBe(true);
+  expect(existsSync(join(g, "note/weak.md"))).toBe(false);
+  expect(readFileSync(join(g, "note/x.md"), "utf8")).toContain("old");
+  expect(readFileSync(join(g, "log.md"), "utf8")).toContain("create note/keep (dream) [pi:a]");
+  expect(readLedger(dreamsDir(env)).sessions.a!.leaf).toBe("1");
+  expect(existsSync(run.staged!)).toBe(false);
+  expect(readRuns(env)[0]!.status).toBe("done");
+});
+
+test("a discarded dream applies nothing; its sessions are read again only with retry", async () => {
+  const agent = writer();
+  session("a", [user("1", null, "x")]);
+  await runDream({ ...options(agent), settings: { ...DEFAULT_DREAM, review: true } });
+  expect(discardRun(env, readRuns(env)[0]!, true).status).toBe("discarded");
+  expect(findUnprocessed(options(agent))).toHaveLength(1);
+  await runDream({ ...options(agent), review: true });
+  discardRun(env, readRuns(env)[0]!, false);
+  expect(findUnprocessed(options(agent))).toHaveLength(0);
+  expect(existsSync(join(g, "note/from-1.md"))).toBe(false);
+});
+
+test("o6y dream show, drop, apply and discard review a staged dream", async () => {
+  session("a", [user("1", null, "x")]);
+  await runDream({ ...options(writer()), review: true });
+  const cli = async (...args: string[]) => {
+    const out: string[] = [];
+    const code = await main(args, { cwd: tmp, env: { ...env, O6Y_HOME: g }, out: (t) => out.push(t), err: (t) => out.push(t), stdin: () => undefined, isTTY: false });
+    return { code, text: out.join("\n") };
+  };
+  expect((await cli("dream")).text).toContain("staged for review");
+  expect((await cli("dream", "show")).text).toContain("+ note/from-1 (5 lines): outlasts the PR");
+  expect((await cli("dream", "drop", "note/zzz")).code).toBe(1);
+  expect((await cli("dream", "apply")).text).toContain("o6y dream done");
+  expect(existsSync(join(g, "note/from-1.md"))).toBe(true);
+  expect((await cli("dream", "apply")).text).toContain("no dream is staged");
+});
+
+test("the limits and review settings are parsed", () => {
+  const { schema, errors } = parseRootSchema("---\ndream:\n  maxNewObjects: 1\n  maxAddedLines: 0\n  protected: [runbook/o6y-dream-runs, person/*]\n  review: true\n---\n");
+  expect(errors).toEqual([]);
+  expect(schema!.dream).toEqual({ maxNewObjects: 1, maxAddedLines: 0, protected: ["runbook/o6y-dream-runs", "person/*"], review: true });
+  expect(parseRootSchema("---\ndream:\n  protected: [nope]\n---\n").errors[0]).toContain("type/slug");
+  expect(parseRootSchema("---\ndream:\n  maxNewObjects: -1\n---\n").errors[0]).toContain("0 or more");
 });

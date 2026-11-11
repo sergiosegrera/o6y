@@ -430,7 +430,7 @@ export default function o6y(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("o6y-dream", {
-    description: "Consolidate past sessions into memory. Options: --dry-run, --here (this directory only), --limit N, --since 30d|YYYY-MM-DD, --session ID[,ID] (run these again)",
+    description: "Consolidate past sessions into memory. Options: --dry-run, --review (stage for `o6y dream apply` instead of applying), --here (this directory only), --limit N, --since 30d|YYYY-MM-DD, --session ID[,ID] (run these again)",
     handler: async (args, ctx) => {
       if (!layers.length) configure(ctx.cwd);
       const words = args.trim().split(/\s+/).filter(Boolean);
@@ -466,12 +466,13 @@ export default function o6y(pi: ExtensionAPI) {
           since,
           sessions: words.flatMap((w, i) => (words[i - 1] === "--session" ? w.split(",").filter(Boolean) : [])),
           dryRun: words.includes("--dry-run"),
+          review: words.includes("--review"),
           settings: load().dream,
           agent: sdkAgent(ctx, pi.getThinkingLevel()),
           signal: dreaming.signal,
           progress: (text) => showStatus(ctx, "o6y-dream", `o6y ${text}`),
         });
-        report(formatRun(run), run.status === "done" || run.status === "nothing" || run.status === "dry-run" ? "info" : "warning");
+        report(formatRun(run), run.status === "done" || run.status === "nothing" || run.status === "dry-run" || run.status === "staged" ? "info" : "warning");
         refreshPrompt();
       } catch (err) {
         report(`o6y dream failed: ${err instanceof Error ? err.message : err}`, "warning");

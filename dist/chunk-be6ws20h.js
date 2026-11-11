@@ -11,7 +11,7 @@ import {
   normalizeLinkValue,
   parseDoc,
   splitDoc
-} from "./chunk-byp1kbkq.js";
+} from "./chunk-cttfmfym.js";
 
 // src/core/format.ts
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -481,4 +481,4 @@ class Plan {
   }
 }
 
-export { ensureFormat, LOG_LINE, appendLog, bootstrap, storeSignature, editFrontmatter, renameKey, parseValue, retargetLinks, Plan };
+export { ensureFormat, describe, LOG_LINE, appendLog, bootstrap, storeSignature, editFrontmatter, renameKey, parseValue, retargetLinks, Plan };

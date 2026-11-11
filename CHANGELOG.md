@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.0
+
+From a review of 13 real dreams, where a third or more of the new objects were cut afterwards.
+
+- **Review before the store changes.** `o6y dream run --review` (or `dream.review: true`) stages a dream instead of applying it. `o6y dream show` lists it, `o6y dream drop ID...` takes objects out, `o6y dream apply` applies what is left and `o6y dream discard [--retry]` drops it. The staged copy is a plain directory you can edit first.
+- **A list to skim.** Every dream reports new objects with the one-line reason each was created, updates sorted by lines changed and flagged when they touch a pinned object or add more than 15 lines, deletions, and other files. `o6y dream show [RUN]` prints it for any run, and the viewer's dream page shows the same. Analyzers and the organizer reply as lists too.
+- **Analyzers write less, and the tools hold them to it.** A new object needs a reason, at most 2 are created per session (`dream.maxNewObjects`), and a create that looks like an existing object is sent back once so the analyzer reads that object first and adds there, whatever its type. A session adds at most 15 lines to an existing object (`dream.maxAddedLines`).
+- **No more PR-bound gotchas or unconfirmed claims.** Analyzers skip a bug that a commit or pull request in the session fixes, and anything true only until one merges. "Inferred, unconfirmed" is no longer a way to record a claim: what the transcript doesn't confirm isn't written. They also skip pixel offsets, capture paths and debugging steps, and keep a narrow quirk out of a broader object. The organizer checks for all of these, and sees each new object's reason.
+- **Protected objects.** `dream.protected: [runbook/o6y-dream-runs]` (ids or `type/*`) lets dreams read an object but not change it. What a dream wanted to change is listed under "Needs review" in the run.
+- `evals/dream-bloat.ts` has cases for these patterns: `pr-bound`, `inferred`, `overlap` and `measurements`.
+
 ## 0.10.6
 
 - Fixed a crash when pi exited while the search index was still syncing in the background, seen after `o6y dream run --dry-run`.

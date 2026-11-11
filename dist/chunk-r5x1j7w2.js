@@ -18,8 +18,8 @@ import {
   suggestionStats,
   syncIndex,
   worthSuggesting
-} from "./chunk-7ffqdz50.js";
-import"./chunk-byp1kbkq.js";
+} from "./chunk-x46zecnb.js";
+import"./chunk-cttfmfym.js";
 export {
   apiKey,
   appendSuggestionLog,
