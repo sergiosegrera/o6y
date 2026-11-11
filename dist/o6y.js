@@ -14,7 +14,7 @@ import {
   renderObjectFooter,
   renderRootIndex,
   renderTypeIndex
-} from "./chunk-bfggpd48.js";
+} from "./chunk-57ebza5f.js";
 import {
   Plan,
   editFrontmatter,
@@ -827,7 +827,7 @@ ${extra}
     async run(ctx) {
       ctx.err("o6y mcp is deprecated and will be removed in a future release; o6y is a pi extension.");
       const [{ serve }, { StdioServerTransport }] = await Promise.all([
-        import("./chunk-st1enjxy.js"),
+        import("./chunk-kmcsx20z.js"),
         import("@modelcontextprotocol/sdk/server/stdio.js")
       ]);
       const transport = new StdioServerTransport;
@@ -911,7 +911,7 @@ ${extra}
       if (!ctx.isTTY)
         throw new UsageError("the viewer needs an interactive terminal");
       process.env.NODE_ENV ??= "production";
-      const { runViewer } = await import("./chunk-vf73d37h.js");
+      const { runViewer } = await import("./chunk-tnwcm158.js");
       await runViewer(ctx.layers, { current: id, view: o.graph ? "graph" : o.dreams ? "dreams" : o.activity ? "activity" : "browse", history: [], filter: "", open: [] });
       return 0;
     }

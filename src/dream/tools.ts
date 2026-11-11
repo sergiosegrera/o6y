@@ -78,7 +78,7 @@ function guard(layers: Layer[], path: string, content: string, change: string, l
   if (isNew && limits.maxNewObjects !== undefined && !limits.created?.has(id)) {
     const made = limits.created?.size ?? 0;
     if (made >= limits.maxNewObjects) throw new Error(`[o6y] rejected; this session has already created ${made} object(s) and the limit is ${limits.maxNewObjects}. Keep only what matters most: add to an existing object, or leave this out.`);
-    if (!reason?.trim()) throw new Error("[o6y] rejected; a new object needs `reason`: one line saying why this is still true and useful after the current PR merges, and why no file or command would tell a future agent the same.");
+    if (!reason?.trim()) throw new Error("[o6y] rejected; a new object needs `reason`: one line saying why this is still true and useful once the work in progress is finished, and why nothing a future agent can look up would tell it the same.");
     if (!state.warned.has(id)) {
       state.warned.add(id);
       const store = Store.load(layers);
@@ -145,7 +145,7 @@ export function storeTools(layers: Layer[], source?: string, limits: Limits = {}
       parameters: Type.Object({
         target: Type.String(),
         content: Type.String(),
-        reason: Type.Optional(Type.String({ description: "Required when this creates an object: one line on why it outlasts the current PR and why no file or command already answers it." })),
+        reason: Type.Optional(Type.String({ description: "Required when this creates an object: one line on why it outlasts the work in progress and why nothing an agent can look up already answers it." })),
       }),
       async execute(_id, a) {
         return text(save(targetPath(layers, a.target), a.content, a.content, a.reason));

@@ -337,7 +337,7 @@ test("a dream's agents get the store's guidance, after the defaults it overrides
     system = r.system;
     return { text: "nothing durable", cost: 0, tokens: 0 };
   }));
-  expect(system.indexOf("The repo wins.")).toBeGreaterThan(system.indexOf("Before every write"));
+  expect(system.indexOf("The repo wins.")).toBeGreaterThan(system.indexOf("What memory is for"));
   expect(withInstructions("base", "", "")).toBe("base");
 });
 

@@ -170,7 +170,9 @@ When semantic search is on, a user message can arrive with an `<o6y-relevant>` b
 
 ## What to record
 
-Record durable knowledge that a teammate would otherwise have to learn the hard way:
+Memory is worth what it saves the next session. Writing something down is a prediction that a
+later session will need it and could not find it by looking, so record what a teammate would
+otherwise learn the hard way:
 - who owns what and who to ask
 - how systems fit together
 - conventions and processes
@@ -178,4 +180,7 @@ Record durable knowledge that a teammate would otherwise have to learn the hard 
 - recurring review feedback
 - pitfalls and workarounds
 
-Skip anything that is obvious from the code or only relevant to the current task. Update existing objects instead of creating near-duplicates, and keep summaries specific.
+What can be looked up (files, documents, a tool's own help) already answers the rest and keeps itself current, and
+detail that only matters to the current task goes stale. Write current understanding in plain
+statements, say how it is known, update the object that already covers it, and keep summaries
+specific. Memory can lag behind reality: re-check a fact that matters, and correct it when it is wrong.

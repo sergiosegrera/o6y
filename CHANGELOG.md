@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.12.0
+
+The prompts now say what memory is for and leave more to the model's judgment, following Anthropic's finding that stronger models do better told the purpose than given fixed rules.
+
+- **Dreams have two stated aims: keep memory fresh, and tie sessions together.** An analyzer corrects what the transcript contradicts, then connects: when a session rediscovered something memory already held, it sharpens the summary or link that would have surfaced it. The organizer looks across what the sessions added for a shared cause or a recurring trap, links the objects, and states a shared lesson once.
+- **Shorter dream prompts.** The analyzer's lists of what not to store and the organizer's 17-item checklist are replaced by one standard: writing something down is a prediction that a future agent will need it and could not look it up. The tool limits (a reason for each new object, `maxNewObjects`, `maxAddedLines`, `protected`) are unchanged.
+- **Not only for coding.** The dream prompts and the `reason` message no longer speak of pull requests and repos; they say "the work in progress" and "what an agent can look up".
+- **Session rules lead with purpose**: read before you act, write what lasts, and re-check a fact that matters, because memory can lag behind reality. The pi and MCP rules share these lines.
+- The manual's "What to record" section says the same.
+
 ## 0.11.0
 
 From a review of 13 real dreams, where a third or more of the new objects were cut afterwards.

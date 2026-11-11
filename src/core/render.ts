@@ -150,23 +150,33 @@ export function renderObjectFooter(store: Store, id: string, path: string): stri
   return lines.join("\n");
 }
 
-const RULES = `o6y is your persistent, typed memory: a wiki of markdown files you read and write with your normal tools. Load the \`o6y\` skill for the full manual (schema syntax, links, layers, migrations) before creating or changing schemas or doing anything non-trivial in it.
+/** What memory is for and how to use it: the same for every way of reaching the store. */
+const PURPOSE =
+  "It is worth what it saves the next session, so it holds what could not be found by looking: who owns what, how things fit together, conventions, decisions and their reasons, traps and their fixes.";
+const READ_FIRST =
+  "- Read before you act. Before work that touches what memory covers (people, preferences, decisions, notes), read every object relevant to it, including the people involved; a summary is only a pointer.{RELEVANT} Memory can lag behind reality: re-check a fact that matters before relying on it, and correct the object when it is wrong.";
+const WRITE_WHAT_LASTS =
+  "- Write what lasts. When you learn something a teammate would otherwise learn the hard way, record it as current understanding, not as an account of the task. Update the object that already covers it; create one only when nothing fits. Project-specific → project store; shared → global store.";
+const PIN_AND_LINK = `- Set \`pinned: true\` on an object to load its full content in every session. Reserve it for critical, always-relevant knowledge; the total is capped by \`pinnedBudget\`.
+- Link objects with [[type/slug]]. Links to things that don't exist yet are allowed (reported as warnings / wanted pages).`;
+
+const RULES = `o6y is your persistent, typed memory: a wiki of markdown files that you maintain with your normal tools and that every later session starts from. ${PURPOSE} Load the \`o6y\` skill for the full manual (schema syntax, links, layers, migrations) before creating or changing schemas or doing anything non-trivial in it.
+${READ_FIRST}
+${WRITE_WHAT_LASTS}
 - Objects are <store>/<type>/<kebab-slug>.md with YAML frontmatter. \`summary\` (one line, max {MAX} chars; keep it well under) is required; other fields come from <type>/${SCHEMA_FILE}, whose body also says how to write that type. Before your first write to a type in a session, read its <type>/${SCHEMA_FILE}.
-- Set \`pinned: true\` on an object to load its full content in every session. Reserve it for critical, always-relevant knowledge; the total is capped by \`pinnedBudget\`.
-- Link objects with [[type/slug]]. Links to things that don't exist yet are allowed (reported as warnings / wanted pages).
+${PIN_AND_LINK}
 - ${INDEX_FILE} files are virtual: <store>/${INDEX_FILE} is the full catalog, <store>/<type>/${INDEX_FILE} lists one type. Reading an object shows its backlinks.
 - Writes are validated; when one is rejected, fix it and retry. Bash changes to a store are validated as a transaction and rolled back if they break it.
-- The \`o6y\` shell command searches and maintains memory: {SEARCH}\`o6y lint\`, and validated multi-file changes such as \`o6y mv\` (rename + relink), \`o6y merge\`, \`o6y field rename\`. Prefer it over hand-written sed/perl. \`o6y help\` lists everything.
-- Consult memory before work that touches what it covers (people, preferences, decisions, notes). Summaries are only pointers: read every object relevant to the task (including the people involved) before advising or acting.{RELEVANT} Record durable knowledge you learn — the tribal knowledge a teammate would need — not task chatter. Update existing objects rather than duplicating them. Project-specific → project store; shared → global store.`;
+- The \`o6y\` shell command searches and maintains memory: {SEARCH}\`o6y lint\`, and validated multi-file changes such as \`o6y mv\` (rename + relink), \`o6y merge\`, \`o6y field rename\`. Prefer it over hand-written sed/perl. \`o6y help\` lists everything.`;
 
 /** The same rules for agents that reach o6y through its MCP server instead of the pi extension. */
-const MCP_RULES = `o6y is your persistent, typed memory: a wiki of markdown objects you read and change through the o6y MCP tools. Change it only through them, never by editing store files with other tools: they validate and log every change. \`o6y_show manual\` is the full manual (schema syntax, links, layers, migrations); read it before creating or changing schemas or doing anything non-trivial. It is written for the pi integration: where it says to use read/write/edit on a store file, use o6y_show/o6y_write/o6y_edit on that path or id, and run \`o6y\` commands with o6y_cli.
+const MCP_RULES = `o6y is your persistent, typed memory: a wiki of markdown objects that you maintain through the o6y MCP tools and that every later session starts from. ${PURPOSE} Change it only through those tools, never by editing store files with other tools: they validate and log every change. \`o6y_show manual\` is the full manual (schema syntax, links, layers, migrations); read it before creating or changing schemas or doing anything non-trivial. It is written for the pi integration: where it says to use read/write/edit on a store file, use o6y_show/o6y_write/o6y_edit on that path or id, and run \`o6y\` commands with o6y_cli.
+${READ_FIRST.replace("{RELEVANT}", "")}
+${WRITE_WHAT_LASTS}
 - Objects are <type>/<kebab-slug> (the file <store>/<type>/<slug>.md) with YAML frontmatter. \`summary\` (one line, max {MAX} chars; keep it well under) is required; other fields come from the type's schema (\`o6y_show <type>/.schema\`), whose body also says how to write that type. Before your first write to a type in a session, read its schema.
-- Set \`pinned: true\` on an object to load its full content in every session. Reserve it for critical, always-relevant knowledge; the total is capped by \`pinnedBudget\`.
-- Link objects with [[type/slug]]. Links to things that don't exist yet are allowed (reported as warnings / wanted pages).
+${PIN_AND_LINK}
 - o6y_show takes an id, a schema (\`<type>/.schema\`, \`.schema\`), \`index\` (the full catalog), \`<type>/index\` (one type), or any path under a store listed below. Showing an object lists its backlinks.
 - o6y_write and o6y_edit validate the change before saving it; when one is rejected, nothing was changed: fix it and retry. Find objects with {SEARCH}and use o6y_cli for \`o6y lint\` and validated multi-file changes such as \`o6y mv\` (rename + relink), \`o6y merge\`, \`o6y field rename\`, \`o6y rm\` (\`help\` lists everything).
-- Consult memory before work that touches what it covers (people, preferences, decisions, notes). Summaries are only pointers: read every object relevant to the task (including the people involved) before advising or acting. Record durable knowledge you learn — the tribal knowledge a teammate would need — not task chatter. Update existing objects rather than duplicating them. Project-specific → project store; shared → global store.
 - The memory below is as of the start of this session; the tools always see the current store.`;
 
 const MCP_PLAIN_SEARCH = "o6y_query (text, or type/where/links_to filters) ";
